@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Leitor de Dados</title>
+  <style nonce="__CSP_NONCE__">
+    :root { color-scheme: light; font: 16px system-ui, sans-serif; color: #173047; background: #f0f4f7; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main { max-width: 900px; margin: 40px auto; padding: 24px; }
+    h1 { margin: 0 0 8px; font-size: 2rem; }
+    p { line-height: 1.5; }
+    form, article { background: white; border: 1px solid #ccd7df; border-radius: 12px; padding: 22px; margin: 22px 0; }
+    label { display: block; font-weight: 600; margin: 14px 0 6px; }
+    input, select, button { font: inherit; border-radius: 6px; padding: 11px; }
+    input, select { display: block; width: 100%; border: 1px solid #8fa4b3; background: white; color: #173047; }
+    button { margin-top: 18px; border: 0; color: white; background: #095d83; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: default; }
+    :focus-visible { outline: 3px solid #d98514; outline-offset: 3px; }
+    small, #version { color: #536a7b; overflow-wrap: anywhere; }
+    #status { min-height: 24px; }
+    pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; font-size: .9rem; }
+    h2 { font-size: 1rem; margin-top: 0; }
+    [hidden] { display: none !important; }
+    @media (max-width: 600px) { main { margin: 12px auto; padding: 16px; } form, article { padding: 16px; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Leitor de Dados</h1>
+  <p>Localize registros por CPF, email, telefone ou código. A busca corresponde ao valor completo do campo.</p>
+  <form id="search-form" autocomplete="off">
+    <label for="api-key">Chave de acesso</label>
+    <input id="api-key" type="password" required minlength="24" autocomplete="off" spellcheck="false">
+    <small>A chave é mantida apenas nesta página e enviada no cabeçalho da consulta.</small>
+    <label for="field">Pesquisar por</label>
+    <select id="field">
+      <option value="cpf">CPF</option>
+      <option value="email">Email</option>
+      <option value="phone">Telefone</option>
+      <option value="code">Código</option>
+    </select>
+    <label for="value">Valor completo</label>
+    <input id="value" type="text" required maxlength="4096" autocomplete="off" spellcheck="false">
+    <label for="limit">Registros por página</label>
+    <select id="limit">
+      <option value="1">1</option>
+      <option value="10">10</option>
+      <option value="25">25</option>
+      <option value="50" selected>50</option>
+      <option value="100">100</option>
+    </select>
+    <button id="submit" type="submit">Pesquisar</button>
+  </form>
+  <p id="status" role="status" aria-live="polite"></p>
+  <p id="version"></p>
+  <section id="results" aria-label="Resultados da consulta"></section>
+  <button id="next" type="button" hidden>Próxima página</button>
+</main>
+<script nonce="__CSP_NONCE__">
+  'use strict';
+  const byId = (id) => document.getElementById(id);
+  const form = byId('search-form');
+  const keyInput = byId('api-key');
+  const fieldInput = byId('field');
+  const valueInput = byId('value');
+  const limitInput = byId('limit');
+  const status = byId('status');
+  const results = byId('results');
+  const version = byId('version');
+  const nextButton = byId('next');
+  const submitButton = byId('submit');
+  let nextCursor = null;
+  let controller = null;
+  let generation = 0;
+
+  function clearQuery() {
+    generation += 1;
+    if (controller) controller.abort();
+    controller = null;
+    nextCursor = null;
+    results.replaceChildren();
+    version.textContent = '';
+    status.textContent = '';
+    nextButton.hidden = true;
+    nextButton.disabled = false;
+    submitButton.disabled = false;
+  }
+
+  keyInput.addEventListener('input', clearQuery);
+  fieldInput.addEventListener('change', clearQuery);
+  valueInput.addEventListener('input', clearQuery);
+  limitInput.addEventListener('change', clearQuery);
+
+  function responseError(response, data) {
+    const messages = {
+      400: 'Confira os parâmetros da consulta.',
+      401: 'Chave de acesso inválida.',
+      403: 'Acesso negado.',
+      409: 'A base mudou ou o cursor expirou. Inicie uma nova consulta.',
+      413: 'Reduza a quantidade de registros por página.',
+      422: 'Confira o campo e o valor informado.',
+      429: 'Muitas consultas. Aguarde e tente novamente.',
+      503: 'Serviço temporariamente indisponível. Tente novamente.',
+    };
+    const detail = data && typeof data.detail === 'string' ? data.detail : messages[response.status];
+    const error = new Error(detail || 'Não foi possível consultar.');
+    error.status = response.status;
+    return error;
+  }
+
+  async function search(cursor = null) {
+    const requestGeneration = ++generation;
+    if (controller) controller.abort();
+    controller = new AbortController();
+    const activeController = controller;
+    submitButton.disabled = true;
+    nextButton.disabled = true;
+    status.textContent = 'Consultando…';
+    if (!cursor) {
+      nextCursor = null;
+      results.replaceChildren();
+      version.textContent = '';
+    }
+    nextButton.hidden = true;
+    try {
+      const response = await fetch('/v1/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': keyInput.value },
+        body: JSON.stringify({ field: fieldInput.value, value: valueInput.value, limit: Number(limitInput.value), cursor }),
+        signal: activeController.signal,
+        cache: 'no-store',
+        credentials: 'omit',
+        redirect: 'error',
+      });
+      let data;
+      try { data = await response.json(); }
+      catch {
+        if (!response.ok) throw responseError(response, null);
+        throw new Error('Resposta inválida do serviço.');
+      }
+      if (requestGeneration !== generation) return;
+      if (!response.ok) {
+        throw responseError(response, data);
+      }
+      if (!Array.isArray(data.items)) throw new Error('Resposta inválida do serviço.');
+      results.replaceChildren();
+      for (const item of data.items) {
+        const card = document.createElement('article');
+        const title = document.createElement('h2');
+        title.textContent = `Registro ${item.record_id}`;
+        const content = document.createElement('pre');
+        content.textContent = JSON.stringify(item.data, null, 2);
+        card.append(title, content);
+        results.append(card);
+      }
+      nextCursor = data.next_cursor || null;
+      status.textContent = data.items.length ? `${data.items.length} registro(s) nesta página.` : 'Nenhum registro encontrado.';
+      version.textContent = `Versão da base: ${data.version}`;
+      nextButton.hidden = !nextCursor;
+    } catch (error) {
+      if (requestGeneration !== generation || error.name === 'AbortError') return;
+      if (error.status === 409) {
+        nextCursor = null;
+        results.replaceChildren();
+        version.textContent = '';
+      }
+      nextButton.hidden = !nextCursor;
+      status.textContent = error instanceof TypeError ? 'Não foi possível conectar ao serviço.' : error.message;
+    } finally {
+      if (requestGeneration === generation) {
+        controller = null;
+        submitButton.disabled = false;
+        nextButton.disabled = false;
+      }
+    }
+  }
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    search();
+  });
+  nextButton.addEventListener('click', () => {
+    if (nextCursor) search(nextCursor);
+  });
+</script>
+</body>
+</html>

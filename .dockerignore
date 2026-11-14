@@ -1,0 +1,11 @@
+# Only source code and installation inputs enter the build context.
+*
+!Dockerfile
+!requirements.txt
+!requirements.lock.txt
+!leitor_dados/
+!leitor_dados/**
+!scripts/
+!scripts/init_secrets.py
+**/__pycache__/
+**/*.py[cod]

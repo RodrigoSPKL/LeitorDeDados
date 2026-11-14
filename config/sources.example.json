@@ -1,0 +1,11 @@
+[
+  {
+    "path": "../examples/registros.csv",
+    "format": "csv",
+    "csv_delimiter": ";"
+  },
+  {
+    "path": "../examples/registros.jsonl",
+    "format": "jsonl"
+  }
+]

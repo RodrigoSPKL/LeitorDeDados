@@ -1,0 +1,6 @@
+cpf;email;telefone;codigo;nome;descricao;valor
+000.000.000-00;ana@example.invalid;+55 (11) 90000-0001;DEMO-001;Pessoa fictícia A;Venda fictícia A;123.45
+00000000000;ana@example.invalid;+55 (11) 90000-0001;DEMO-002;Pessoa fictícia A;Venda fictícia B;45.00
+00000000000;Ana@example.invalid;11900000001;DEMO-003;Pessoa fictícia B;Registro fictício de outra origem;10.00
+11111111111;bruno@example.invalid;11900000002;DEMO-004;Pessoa fictícia C;Venda fictícia C;99.99
+;;;DEMO-005;Sem identificadores pessoais;Só o código é pesquisável;0.00

@@ -1,0 +1,16 @@
+{
+  "format": "jsonl",
+  "encoding": "utf-8-sig",
+  "fields": {
+    "cpf": "cpf",
+    "email": "email",
+    "phone": "telefone",
+    "code": "codigo"
+  },
+  "normalization": {
+    "email": {"lowercase": false}
+  },
+  "data_shards": 2,
+  "lookup_shards": 4,
+  "batch_size": 1000
+}

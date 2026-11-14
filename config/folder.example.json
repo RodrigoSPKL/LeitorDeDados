@@ -1,0 +1,14 @@
+{
+  "catalog": {
+    "encoding": "utf-8-sig",
+    "batch_size": 1000,
+    "page_size": 16384
+  },
+  "snapshot": {
+    "data_shards": 8,
+    "lookup_shards": 16,
+    "batch_size": 1000,
+    "invalid_identifiers": "skip",
+    "normalization": {"email": {"lowercase": false}}
+  }
+}

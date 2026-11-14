@@ -1,0 +1,2 @@
+{"cpf":"00000000000","email":"ana@example.invalid","telefone":"+5511900000001","codigo":"DEMO-001","nome":"Pessoa fictícia A","descricao":"JSONL de demonstração","valor":"123.45"}
+{"cpf":"00000000000","email":"ana@example.invalid","telefone":"+5511900000001","codigo":"DEMO-002","nome":"Pessoa fictícia A","descricao":"Outro registro legítimo com o mesmo CPF","valor":"45.00"}
