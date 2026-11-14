@@ -13,6 +13,8 @@ bash /opt/leitor-dados/processar-pasta.sh
 
 O comando percorre subpastas e descompacta ZIP, RAR e TAR recursivamente. Importa CSV/TXT delimitado, JSONL e SQLite em tabelas por pasta e estrutura de colunas. Partes `1`, `2`, `3` com as mesmas colunas entram na mesma tabela. **Linhas duplicadas são permitidas.** Arquivos já importados e inalterados são pulados nas execuções seguintes; arquivos modificados são acrescentados integralmente, preservando as linhas anteriores.
 
+Instalar o projeto e manter os arquivos gerados em um sistema de arquivos Linux com permissões POSIX, como ext4 ou XFS. Originais em um disco exFAT podem ser lidos, mas credenciais, catálogo e snapshots precisam de um destino Linux. Para separar o destino da pasta de entrada, usar `WORK_PATH=/caminho/linux/meu-lote bash /opt/leitor-dados/processar-pasta.sh`; nesse caso, consultar `WORK_PATH/published`. Ver o [manual Linux](docs/rodar-linux.md#discos-externos-e-erro-operation-not-permitted).
+
 Os originais ficam intactos. O catálogo com as tabelas está em `.leitor/catalog.sqlite`; a versão para consulta fica em `.leitor/published`. Ver [importação automática de pastas](docs/importacao-de-pastas.md) para formatos, identificação das colunas, limites de expansão e bancos de origem compatíveis.
 
 Para abrir a API com o resultado dessa pasta:
@@ -29,7 +31,7 @@ Copiar ou descompactar o projeto no servidor. Com Docker Engine, plugin Docker C
 bash scripts/linux-start.sh
 ```
 
-O script prepara as credenciais locais, constrói a imagem, cria/publica o banco de demonstração e inicia o servidor. Abrir **http://127.0.0.1:8000/**. A chave de acesso fica em `secrets/api_key`; um administrador pode lê-la no servidor com `sudo cat secrets/api_key`. A chave não acompanha o pacote e não é gravada pelo navegador.
+O script prepara as credenciais locais no host, solicitando `sudo` se necessário, constrói a imagem, cria/publica o banco de demonstração e inicia o servidor. Também pode ser executado com `sudo bash scripts/linux-start.sh`. Abrir **http://127.0.0.1:8000/**. A chave de acesso fica em `secrets/api_key`; um administrador pode lê-la no servidor com `sudo cat secrets/api_key`. A chave não acompanha o pacote e não é gravada pelo navegador.
 
 SQLite não precisa de um serviço de banco separado: os bancos são arquivos em `data/versions/`. O processo permanente é a API de consulta. O exemplo pressupõe Linux com Docker rootful, sem remapeamento de usuários. Para acessar de outro computador, usar o túnel SSH descrito no [manual Linux](docs/rodar-linux.md), ou preparar proxy TLS/VPN.
 

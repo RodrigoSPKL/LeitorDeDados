@@ -38,6 +38,11 @@ def initialize(directory: Path, uid: int | None = None, gid: int | None = None) 
         else:
             try:
                 with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as handle:
+                    if os.name == "posix" and stat.S_IMODE(os.fstat(handle.fileno()).st_mode) != 0o600:
+                        raise ValueError(
+                            f"{name}: o sistema de arquivos não aplicou o modo privado 0600. "
+                            "Use uma pasta Linux com permissões POSIX, como ext4 ou XFS."
+                        )
                     handle.write(secrets.token_urlsafe(32) + "\n")
                 os.chmod(path, 0o600)
             except BaseException:
@@ -50,8 +55,25 @@ def initialize(directory: Path, uid: int | None = None, gid: int | None = None) 
             try:
                 if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                     raise ValueError(f"{name}: ownership exige arquivo regular")
-                os.fchown(descriptor, uid, gid)
-                os.fchmod(descriptor, 0o600)
+                try:
+                    os.fchown(descriptor, uid, gid)
+                except OSError as exc:
+                    raise OSError(
+                        exc.errno,
+                        f"{name}: não foi possível ajustar UID/GID para {uid}:{gid}. "
+                        "Execute a preparação no host com sudo e use um sistema de arquivos "
+                        "Linux com permissões POSIX, como ext4 ou XFS; exFAT não permite esse ajuste.",
+                        str(path),
+                    ) from exc
+                try:
+                    os.fchmod(descriptor, 0o600)
+                except OSError as exc:
+                    raise OSError(
+                        exc.errno,
+                        f"{name}: não foi possível aplicar o modo 0600. "
+                        "Mantenha as credenciais em um sistema de arquivos Linux com permissões POSIX.",
+                        str(path),
+                    ) from exc
             finally:
                 os.close(descriptor)
         print(f"{name}: {'criado' if created else 'existente preservado'}")

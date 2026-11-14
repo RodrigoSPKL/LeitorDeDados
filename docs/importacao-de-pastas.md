@@ -13,6 +13,16 @@ bash /opt/leitor-dados/processar-pasta.sh
 
 O script usa a pasta de onde foi chamado, mesmo estando instalado em outro local. Constrói a imagem com o leitor RAR e monta a origem somente para leitura. Os destinos graváveis são apenas as áreas derivadas em `.leitor/`. Não precisa iniciar a API durante a preparação.
 
+É possível manter os originais em outro disco, inclusive exFAT, e gravar os resultados em um filesystem Linux com permissões POSIX. `WORK_PATH` muda a pasta do catálogo, da extração e da publicação; o destino da API passa a ser `WORK_PATH/published`:
+
+```bash
+cd /media/usuario/ACERVO/lote-1
+sudo env WORK_PATH=/dados-linux/lote-1 bash /opt/leitor-dados/processar-pasta.sh
+sudo env DATA_PATH=/dados-linux/lote-1/published bash /opt/leitor-dados/scripts/linux-start.sh
+```
+
+O destino precisa ter espaço para todos os arquivos gerados. O código e as credenciais também devem ficar em filesystem Linux, como ext4 ou XFS; exFAT é aceito apenas para leitura das origens. Se o destino estiver dentro da origem, ele é excluído da varredura. Origem e destino não podem ser a mesma pasta, nem a origem ficar dentro do destino.
+
 Evitar executar na pasta do código: ela contém exemplos e arquivos de configuração que não pertencem ao acervo da empresa. Uma pasta legítima chamada `data` dentro da origem continua sendo lida; os resultados deste comando ficam em `.leitor/published`.
 
 ## Sem Docker

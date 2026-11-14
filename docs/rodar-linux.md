@@ -12,7 +12,7 @@ Na raiz do projeto:
 bash scripts/linux-start.sh
 ```
 
-O script cria os diretórios locais, gera dois segredos sem sobrescrever existentes, constrói a imagem e ajusta somente a propriedade desses dois arquivos para UID/GID `10001:10001`. Se não existir `data/current.json`, importa e publica `demo-v1` usando `examples/registros.csv`. Em seguida, aguarda a API ficar disponível.
+O script cria os diretórios locais, incluindo `.leitor`, e prepara dois segredos no host sem sobrescrever existentes. Ajusta somente esses dois arquivos para UID/GID `10001:10001` e modo `0600`; solicita `sudo` para essa preparação se não estiver executando como root. Em seguida, constrói a imagem. Se não existir `data/current.json`, importa e publica `demo-v1` usando `examples/registros.csv`. Por fim, aguarda a API ficar disponível. Rootless e `userns-remap` são recusados antes de alterar os arquivos, pois requerem outro mapeamento de IDs.
 
 Se já houver acervo publicado, ele é preservado. Se uma tentativa anterior deixou `demo-v1` preparado sem publicação, o importador deve recusar sobrescrita: verificar e publicar essa versão pelos comandos abaixo antes de repetir o início.
 
@@ -97,10 +97,44 @@ docker compose stop api
 
 A API executa com UID `10001`, filesystem da imagem somente de leitura, diretório temporário em memória, capacidades removidas e dois workers iniciais. Esses parâmetros não são dimensionamento para 20 bilhões: ajustar após medir concorrência, RAM, I/O e latência. O acesso HTTP do Uvicorn não é registrado pelo comando padrão.
 
-Os segredos ficam com modo `0600`. Em Compose, segredos originados de arquivo usam bind mounts; `uid`, `gid` e `mode` não remapeiam a propriedade nesses casos. Por isso o script ajusta os dois arquivos explicitamente. Repetir o início não troca seu conteúdo. Se precisar gerar credenciais novas, tratar como rotação coordenada; trocar o segredo de cursor invalida cursores anteriores. [Compose e segredos de arquivo](https://docs.docker.com/reference/compose-file/services/#secrets).
+Os segredos ficam com modo `0600`. Em Compose, segredos originados de arquivo usam bind mounts; `uid`, `gid` e `mode` não remapeiam a propriedade nesses casos. Por isso o script ajusta os dois arquivos explicitamente no host, antes de construir a imagem. Repetir o início não troca seu conteúdo. Se precisar gerar credenciais novas, tratar como rotação coordenada; trocar o segredo de cursor invalida cursores anteriores. [Compose e segredos de arquivo](https://docs.docker.com/reference/compose-file/services/#secrets).
 
 Manter backup separado dos acervos, manifestos, referência publicada, configuração de importação e segredos necessários. Restaurar para um diretório independente, conferir checksums e consultas conhecidas e só então direcionar a API. Uma cópia disponível não comprova restauração. Para arquivos estáticos, a réplica local pode ser preparada antes de aceitar tráfego.
 
 Para acesso corporativo remoto, colocar a API atrás de proxy com TLS ou VPN e controle de acesso adequado. A configuração inicial não instala proxy, domínio ou certificado. Alterar `BIND_ADDRESS` pode expor a porta; fazê-lo apenas após preparar essa entrada de rede. Os arquivos e índices continuam locais a cada servidor, com publicação consistente por versão.
 
-Esta entrega não foi executada em Docker neste ambiente de desenvolvimento, onde Docker e Bash não estão disponíveis. A validação realizada aqui não equivale a um ensaio de implantação Linux; confirmar construção, permissões, healthchecks, consultas e restauração no servidor de destino.
+Esta entrega não foi executada em Docker neste ambiente de desenvolvimento, onde Docker não está disponível. Os scripts foram exercitados em Git Bash com comandos externos simulados; isso não equivale a um ensaio de implantação Linux. Confirmar construção, permissões, healthchecks, consultas e restauração no servidor de destino.
+
+## Discos externos e erro Operation not permitted
+
+O projeto, as credenciais e os destinos graváveis devem ficar em um sistema de arquivos Linux com permissões POSIX, como ext4 ou XFS. No exFAT, proprietário e permissões vêm das opções de montagem (`uid`, `gid`, `fmask`, `dmask`); não é possível aplicar a propriedade individual exigida pelas credenciais. Executar como root não dá ao exFAT esse suporte. [Documentação do driver exFAT do Linux](https://docs.kernel.org/filesystems/exfat.html).
+
+Se a preparação das chaves falhar, conferir os sistemas de arquivos e o modo do Docker, sem mostrar os segredos:
+
+```bash
+findmnt -T "$PWD/secrets" -o TARGET,FSTYPE,OPTIONS
+findmnt -T "$HOME" -o TARGET,FSTYPE,OPTIONS
+sudo docker info --format '{{json .SecurityOptions}}'
+```
+
+Se o projeto estiver em exFAT e o diretório pessoal estiver em ext4/XFS, fazer uma nova cópia do código no diretório pessoal. Isso não move, apaga nem reformata os arquivos de origem. O clone novo cria suas próprias credenciais locais:
+
+```bash
+git clone https://github.com/RodrigoSPKL/LeitorDeDados.git "$HOME/LeitorDeDados-linux"
+cd "$HOME/LeitorDeDados-linux"
+sudo bash scripts/linux-start.sh
+```
+
+Para apenas atualizar uma instalação que já está em filesystem Linux, executar `git pull --ff-only` na raiz e repetir o início. Se desejar manter as credenciais anteriores, copiá-las de forma privada antes de iniciar o clone novo; não publicar seu conteúdo.
+
+Os originais podem continuar no disco exFAT, montados somente para leitura pelo importador. Escolher um destino Linux com espaço para a expansão, o catálogo e os snapshots; `WORK_PATH` separa esses resultados da origem:
+
+```bash
+PROJETO="$HOME/LeitorDeDados-linux"
+DESTINO="$HOME/leitor-acervo/lote-1"
+cd /media/usuario/ACERVO/pasta-dos-dados
+sudo env WORK_PATH="$DESTINO" bash "$PROJETO/processar-pasta.sh"
+sudo env DATA_PATH="$DESTINO/published" bash "$PROJETO/scripts/linux-start.sh"
+```
+
+Substituir o caminho da origem e escolher `DESTINO` conforme a capacidade disponível. Não usar o exFAT como destino dos bancos gerados nesta implementação. A solução não requer mudar as permissões de todo o disco nem formatá-lo.

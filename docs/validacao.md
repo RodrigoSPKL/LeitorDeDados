@@ -1,10 +1,10 @@
 # Validação da entrega
 
-Ambiente de desenvolvimento: Windows, CPython 3.14 e ambiente virtual local; dependências fixadas em `requirements.lock.txt`. O container tem alvo Python 3.12/Linux e ainda não foi executado, pois Docker e Bash não estão disponíveis neste ambiente.
+Ambiente de desenvolvimento: Windows, CPython 3.14 e ambiente virtual local; dependências fixadas em `requirements.lock.txt`. O container tem alvo Python 3.12/Linux e ainda não foi executado neste ambiente, pois Docker não está disponível. Os scripts de orquestração também são exercitados em Git Bash com comandos externos simulados, sem executar containers.
 
 ## Verificações realizadas
 
-**88 testes automatizados foram executados: 87 passaram e 1 foi ignorado**, porque o Windows deste ambiente não permite criar o link simbólico exigido pelo caso de teste. Também foram executadas as verificações por CLI e HTTP abaixo.
+**105 testes automatizados foram executados: 103 passaram e 2 foram ignorados**, porque o Windows deste ambiente não permite criar os links simbólicos exigidos por esses casos. Também foram executadas as verificações por CLI e HTTP abaixo.
 
 - Testes automatizados de importação CSV/JSONL, normalização, zeros iniciais, lotes, fontes mistas, falhas e publicação de versões.
 - Testes de descoberta e extração recursiva ZIP, ZIP64 e TAR com gzip/bzip2/xz; cache, diretórios aninhados, preservação dos originais, limites de expansão, metadados e caminhos inválidos.
@@ -14,7 +14,9 @@ Ambiente de desenvolvimento: Windows, CPython 3.14 e ambiente virtual local; dep
 - Testes de consultas SQLite reais, os quatro acessos, ausência de fan-out entre lookups, payload original, paginação preservada após nova publicação e cursores inválidos/expirados.
 - Testes de leitura imutável, corrupção detectada por checksum, arquivos ausentes, saturação, timeout e limite de resultados.
 - Testes de API: autenticação, readiness, segredo em arquivo, erros sem ecoar dados pessoais, corpo limitado e paginação sobre banco real.
-- Geração idempotente de credenciais e validação estática de Compose, arquivos UTF-8, caminhos, documentação e pacote de distribuição.
+- Geração idempotente de credenciais, preservação das existentes em falhas de propriedade/permissão e rejeição de filesystem que ignora modo privado, com falhas simuladas sem mostrar segredos.
+- Scripts Bash executados com comandos externos simulados: preparação no host, recusa antecipada de rootless/userns, `DATA_PATH` preservado, origem somente leitura, `WORK_PATH` externo, exclusão de saídas internas e rejeição de destino igual/ancestral à origem. Isso não executa Docker nem valida um filesystem exFAT real.
+- Validação estática de Compose, arquivos UTF-8, caminhos, documentação e pacote de distribuição.
 - Construção da demonstração CSV com cinco registros e de uma versão mista CSV/JSONL com sete registros; integridade completa e checksums conferidos.
 - Servidor Uvicorn local real: liveness, readiness autenticado, duas páginas de consulta por CPF e HTML com CSP verificados por HTTP.
 - JavaScript da interface: sintaxe e comportamento de estados, paginação, retry e renderização como texto verificados automaticamente.
