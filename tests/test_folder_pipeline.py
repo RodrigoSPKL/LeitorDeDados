@@ -119,6 +119,17 @@ class FolderPipelineTests(unittest.TestCase):
         with self.assertRaises(CatalogError) as context:
             self.ingest("failed-version")
         self.assertNotIn("private-marker", str(context.exception))
+        failed_report = json.loads((self.workspace / "last-report.json").read_text(encoding="utf-8"))
+        self.assertEqual(failed_report["status"], "failed")
+        self.assertFalse(failed_report["published"])
+        self.assertEqual(failed_report["discovered_files"], 3)
+        self.assertEqual(failed_report["catalog_rows_committed"], 1)
+        self.assertEqual(failed_report["error_context"], {
+            "source": "pessoas/3.csv", "format": "delimited", "record": 2,
+            "line_start": 3, "line_end": 3, "expected_columns": 3,
+            "actual_columns": 4, "delimiter": ";",
+        })
+        self.assertNotIn("private-marker", json.dumps(failed_report))
         self.assertEqual((self.data / "current.json").read_bytes(), current)
         self.assertEqual(self.hashes(self.data / "versions" / "safe-v1"), snapshot)
         self.assertFalse((self.data / "versions" / "failed-version").exists())
@@ -129,6 +140,19 @@ class FolderPipelineTests(unittest.TestCase):
         self.assertEqual(recovered["tables"][0]["rows"], 3)
         self.assertEqual(len(self.store().search("cpf", CPF, 100)["items"]), 3)
         self.assertEqual(hashlib.sha256(first_source.read_bytes()).hexdigest(), first_hash)
+
+    def test_failed_archived_csv_is_identified_without_publishing_or_exposing_values(self):
+        (self.folder / "bundle.zip").write_bytes(self.zip_bytes({
+            "people/data.csv": b"cpf,nome\n00123456789,Ana\nprivate-marker,extra,columns\n",
+        }))
+        with self.assertRaises(CatalogError):
+            self.ingest("bad-archive")
+        report = json.loads((self.workspace / "last-report.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["error_context"]["source"], "bundle.zip!people/data.csv")
+        self.assertEqual(report["catalog_rows_committed"], 0)
+        self.assertEqual(report["error_context"]["line_start"], 3)
+        self.assertNotIn("private-marker", json.dumps(report))
+        self.assertFalse((self.data / "current.json").exists())
 
     @staticmethod
     def zip_bytes(entries):

@@ -78,10 +78,46 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaises(CatalogError) as context:
             import_files([good, bad], self.catalog, options={"batch_size": 1})
         self.assertNotIn("private", str(context.exception))
+        self.assertNotIn(str(bad.path), str(context.exception))
+        self.assertEqual(context.exception.details, {
+            "source": "vendas/bad.csv", "format": "delimited", "record": 2,
+            "line_start": 3, "line_end": 3, "expected_columns": 2,
+            "actual_columns": 3, "delimiter": ",",
+        })
         report = import_files([good], self.catalog)
         self.assertEqual(report["skipped_files"], 1)
         self.assertEqual(report["tables"][0]["rows"], 1)
         self.assertEqual(self.rows(report["tables"][0]["name"]), [("00123456789", "Ana")])
+
+    def test_csv_diagnostics_track_multiline_records_and_blank_lines_without_values(self):
+        source = self.csv("multiline.csv", 'cpf,nome\n00123456789,"private-first\nprivate-second"\n\nprivate,extra,values\n')
+        with self.assertRaises(CatalogError) as caught:
+            import_files([source], self.catalog, options={"delimiter": ",", "batch_size": 1})
+        details = caught.exception.details
+        self.assertEqual((details["record"], details["line_start"], details["line_end"]), (2, 5, 5))
+        self.assertEqual((details["expected_columns"], details["actual_columns"]), (2, 3))
+        self.assertNotIn("private", str(caught.exception) + json.dumps(details))
+        self.assertEqual(import_files([], self.catalog)["tables"], [])
+
+    def test_unclosed_quotes_have_source_and_physical_lines_without_input_values(self):
+        source = self.csv("quotes.csv", 'cpf,nome\n00123456789,"private-first\nprivate-second\n')
+        with self.assertRaises(CatalogError) as caught:
+            import_files([source], self.catalog, options={"delimiter": ","})
+        details = caught.exception.details
+        self.assertEqual((details["record"], details["line_start"], details["line_end"]), (1, 2, 3))
+        self.assertEqual(details["source"], source.source)
+        self.assertNotIn("private", str(caught.exception) + json.dumps(details))
+
+    def test_explicit_separator_can_recover_failed_file_without_changing_source(self):
+        source = self.csv("separator.csv", "cpf;nome\n00123456789;private,last\n")
+        original = source.path.read_bytes()
+        with self.assertRaises(CatalogError) as caught:
+            import_files([source], self.catalog, options={"delimiter": ","})
+        self.assertEqual(caught.exception.details["expected_columns"], 1)
+        recovered = import_files([source], self.catalog, options={"delimiter": ";"})
+        self.assertEqual(recovered["imported_rows"], 1)
+        self.assertEqual(self.rows(recovered["tables"][0]["name"]), [("00123456789", "private,last")])
+        self.assertEqual(source.path.read_bytes(), original)
 
     def test_sniffer_fallback_keeps_semicolon_and_respects_quoted_header(self):
         for index, header in enumerate(("cpf;nome", 'cpf;"nome;apelido"')):

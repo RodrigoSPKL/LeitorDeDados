@@ -43,6 +43,11 @@ class DiscoveredFileLike(Protocol):
 class CatalogError(ValueError):
     """Safe import errors omit source values, file paths and SQL statements."""
 
+    def __init__(self, message: str, *, details: dict | None = None):
+        super().__init__(message)
+        # Source identities are written only to the local import report.
+        self.details = dict(details or {})
+
 
 def _quoted(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
@@ -309,15 +314,38 @@ def _source_groups(path: Path, kind: str, options: dict):
                         header = _columns(raw_header)
 
                         def csv_rows():
+                            record = 0
                             while True:
                                 lines.record_bytes = 0
-                                row = next(reader, None)
+                                start_line = reader.line_num + 1
+                                try:
+                                    row = next(reader, None)
+                                except csv.Error:
+                                    raise CatalogError(
+                                        f"CSV inválido no registro de dados {record + 1}, "
+                                        f"linhas físicas {start_line}-{reader.line_num}. "
+                                        "Confira aspas e separador; detalhes em last-report.json.",
+                                        details={"format": "delimited", "record": record + 1,
+                                                 "line_start": start_line, "line_end": reader.line_num,
+                                                 "delimiter": delimiter},
+                                    ) from None
                                 if row is None:
                                     return
                                 if not row:
                                     continue
+                                record += 1
                                 if len(row) != len(header):
-                                    raise CatalogError("Quantidade de colunas diferente do cabeçalho.")
+                                    raise CatalogError(
+                                        f"Quantidade de colunas diferente do cabeçalho: "
+                                        f"esperadas {len(header)}, encontradas {len(row)}; "
+                                        f"registro de dados {record}, linhas físicas "
+                                        f"{start_line}-{reader.line_num}. "
+                                        "Confira separador e aspas; detalhes em last-report.json.",
+                                        details={"format": "delimited", "record": record,
+                                                 "line_start": start_line, "line_end": reader.line_num,
+                                                 "expected_columns": len(header), "actual_columns": len(row),
+                                                 "delimiter": delimiter},
+                                    )
                                 yield row
 
                         yield iter(((None, header, csv_rows()),))
@@ -443,12 +471,14 @@ def import_files(files: list[DiscoveredFileLike], catalog_path: Path, options: d
         raise CatalogError("Lista de origens ou callback de progresso inválido.")
     catalog_path = Path(catalog_path).absolute()
     imported_files = skipped_files = imported_rows = 0
+    current_source = None
     try:
         with closing(_open_catalog(catalog_path, options["page_size"])) as connection:
             for item in files:
                 if (not isinstance(getattr(item, "source", None), str) or not item.source
                         or not isinstance(getattr(item, "logical_parent", None), str)):
                     raise CatalogError("Metadados de origem inválidos.")
+                current_source = item.source
                 path = Path(item.path)
                 if path.resolve() == catalog_path.resolve() or os.path.samefile(path, catalog_path):
                     raise CatalogError("O catálogo não pode ser importado como sua própria origem.")
@@ -485,7 +515,13 @@ def import_files(files: list[DiscoveredFileLike], catalog_path: Path, options: d
             return {"tables": _report_tables(connection), "imported_files": imported_files,
                     "skipped_files": skipped_files, "imported_rows": imported_rows,
                     "catalog_page_size": connection.execute("PRAGMA page_size").fetchone()[0]}
-    except CatalogError:
+    except CatalogError as exc:
+        if current_source is not None:
+            exc.details.setdefault("source", current_source)
         raise
     except (OSError, sqlite3.Error, UnicodeError, csv.Error, ValueError, TypeError, RecursionError):
-        raise CatalogError("Falha ao importar origem; confira formato, codificação, esquema e permissões.") from None
+        raise CatalogError(
+            "Falha ao importar origem; confira formato, codificação, esquema e permissões. "
+            "Detalhes em last-report.json.",
+            details={"source": current_source} if current_source is not None else None,
+        ) from None

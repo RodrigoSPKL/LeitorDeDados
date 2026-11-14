@@ -4,12 +4,13 @@ Ambiente de desenvolvimento: Windows, CPython 3.14 e ambiente virtual local; dep
 
 ## Verificações realizadas
 
-**105 testes automatizados foram executados: 103 passaram e 2 foram ignorados**, porque o Windows deste ambiente não permite criar os links simbólicos exigidos por esses casos. Também foram executadas as verificações por CLI e HTTP abaixo.
+**109 testes automatizados foram executados: 107 passaram e 2 foram ignorados**, porque o Windows deste ambiente não permite criar os links simbólicos exigidos por esses casos. Também foram executadas as verificações por CLI e HTTP abaixo.
 
 - Testes automatizados de importação CSV/JSONL, normalização, zeros iniciais, lotes, fontes mistas, falhas e publicação de versões.
 - Testes de descoberta e extração recursiva ZIP, ZIP64 e TAR com gzip/bzip2/xz; cache, diretórios aninhados, preservação dos originais, limites de expansão, metadados e caminhos inválidos.
 - Testes reais dos parsers de RAR3/RAR5 com conteúdo armazenado sem compressão; a disponibilidade do backend foi simulada, sem executar `unar`. O caminho de RAR comprimido ainda exige teste no Linux com o backend instalado.
 - Testes de tabelas reais por pasta/esquema, partes com colunas em ordens diferentes, bancos SQLite de origem, duplicatas, arquivos inalterados e retomada por arquivo após falha.
+- Diagnóstico de CSV inválido sem valores dos registros: quantidade de colunas, registros multilinha, aspas incompletas, origem dentro de ZIP no relatório privado, preservação dos arquivos confirmados e recuperação com separador explícito.
 - Fluxo completo iniciado com a pasta atual como entrada, sem `--folder`: ZIP contendo TAR.GZ contendo CSV, consulta dos resultados publicados, pasta original chamada `data` preservada e nova execução sem reconstrução.
 - Testes de consultas SQLite reais, os quatro acessos, ausência de fan-out entre lookups, payload original, paginação preservada após nova publicação e cursores inválidos/expirados.
 - Testes de leitura imutável, corrupção detectada por checksum, arquivos ausentes, saturação, timeout e limite de resultados.

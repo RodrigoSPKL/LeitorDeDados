@@ -76,6 +76,28 @@ Um arquivo alterado é acrescentado inteiro novamente; suas linhas antigas perma
 
 Cada arquivo é confirmado numa transação com seu histórico. Se um arquivo falhar, suas inserções são revertidas; os anteriores ficam confirmados para retomada. A API mantém a versão anterior até a nova preparação terminar. A construção do snapshot de consulta ainda não retoma internamente um arquivo interrompido.
 
+### Quantidade de colunas diferente do cabeçalho
+
+Esse erro interrompe o arquivo atual sem descartar linhas silenciosamente. As causas incluem separador incorreto, delimitador dentro de um campo sem aspas ou cabeçalho incompatível. A mensagem informa a quantidade de colunas esperada/encontrada, o número do registro de dados e as linhas físicas; campos com quebras de linha podem ocupar várias linhas físicas.
+
+O relatório local `WORK_PATH/last-report.json` (ou `.leitor/last-report.json` no modo padrão) contém `error_context` com `source`, `record`, `line_start`, `line_end`, `delimiter` e, em divergências de quantidade, `expected_columns`/`actual_columns`. `source` é relativo à origem; para conteúdo compactado, `arquivo.zip!pasta/dados.csv` identifica também o membro interno. Caminhos e valores dos registros não são impressos no terminal. O nome da origem fica apenas no relatório local, que deve ser mantido privado.
+
+`catalog_rows_committed` é a quantidade de linhas novas confirmadas nesta execução; o progresso é emitido após concluir cada arquivo. A falha preserva essas linhas dos arquivos anteriores no catálogo. `published: false` indica que esta execução não publicou uma nova versão de consulta.
+
+Conferir o arquivo indicado e corrigir o formato ou configurar explicitamente `catalog.delimiter`/`catalog.encoding`, conforme necessário. Para um arquivo extraído, ajustar a origem ou o compactado, em vez de editar o cache. Depois repetir o comando na mesma pasta de origem com o mesmo `WORK_PATH`; os arquivos inalterados passam pela conferência de hash e sua inserção é pulada. Preservar o catálogo e o histórico de importação para aproveitar a retomada.
+
+Após atualizar o projeto, o comando abaixo retoma a importação e grava o diagnóstico local se o problema persistir:
+
+```bash
+PROJETO="$HOME/LeitorDeDados-linux"
+DESTINO="$HOME/leitor-acervo/lote-1"
+git -C "$PROJETO" pull --ff-only &&
+sudo env WORK_PATH="$DESTINO" bash "$PROJETO/processar-pasta.sh"
+sudo cat "$DESTINO/last-report.json"
+```
+
+Executar esse bloco da pasta dos dados, mantendo os caminhos usados na execução anterior. A escolha de permitir duplicatas não equivale a aceitar registros com estrutura inválida.
+
 ## Campos de busca e configuração
 
 CPF, e-mail, telefone e código são reconhecidos por nomes comuns das colunas. É uma convenção de cabeçalho, não uma inferência de identidade pelo conteúdo. É possível sobrescrever os campos em `catalog.fields`, assim como codificação e separador. Ver `config/folder.example.json`.

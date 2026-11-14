@@ -12,7 +12,7 @@ import uuid
 
 from .archives import ExtractionLimits, discover_files
 from .builder import build_dataset, publish_version, _write_json, _fsync_directory
-from .catalog import import_files
+from .catalog import CatalogError, import_files
 from .query import DatasetUnavailable, load_manifest
 
 
@@ -79,8 +79,16 @@ def ingest_folder(folder: Path, workspace: Path | None = None, data_dir: Path | 
                 raise FolderImportError("Nenhum CSV, TXT delimitado, JSONL ou banco SQLite foi encontrado.")
             if progress:
                 progress("discovered_files", len(files))
+            report["discovered_files"] = len(files)
+            report["catalog_rows_committed"] = 0
+
+            def catalog_progress(count):
+                report["catalog_rows_committed"] = count
+                if progress:
+                    progress("catalog_rows_committed", count)
+
             report = import_files(files, workspace / "catalog.sqlite", options=catalog_options,
-                                  progress=(lambda rows: progress("catalog_rows_committed", rows)) if progress else None)
+                                  progress=catalog_progress)
             report.update(status="catalog_ready", discovered_files=len(files), published=False)
             tables = report["tables"]
             if not tables:
@@ -122,5 +130,7 @@ def ingest_folder(folder: Path, workspace: Path | None = None, data_dir: Path | 
             return report
         except Exception as exc:
             report.update(status="failed", error_type=type(exc).__name__, published=False)
+            if isinstance(exc, CatalogError):
+                report.update(error_message=str(exc), error_context=exc.details)
             _report(workspace / "last-report.json", report)
             raise
