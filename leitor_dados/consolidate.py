@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import codecs
 from contextlib import closing
 import csv
 import hashlib
@@ -182,7 +183,7 @@ def _rows(path, encoding, delimiter):
                 csv.field_size_limit(old_limit)
 
 
-def _connect(path, root, options, *, create):
+def _connect(path, root, options, *, create, allow_auto_upgrade=False):
     if not create:
         _regular(path)
     connection = sqlite3.connect(path, isolation_level=None)
@@ -192,8 +193,14 @@ def _connect(path, root, options, *, create):
             if connection.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID:
                 raise ConsolidationError("O nome do banco de saída já pertence a outro arquivo; nada foi sobrescrito.")
             config = dict(connection.execute("SELECT chave, valor FROM configuracao"))
-            if config.get("formato") != "1" or config.get("raiz") != str(root) or config.get("opcoes") != _json(options):
+            if config.get("formato") != "1" or config.get("raiz") != str(root):
                 raise ConsolidationError("Banco existente pertence a outra raiz ou configuração; use as opções originais.")
+            previous = json.loads(config["opcoes"])
+            compatible_upgrade = (allow_auto_upgrade and previous.get("encoding") == "utf-8-sig"
+                                  and options == {**previous, "encoding": "auto"}
+                                  and config.get("estado") in {"importando", "verificado"})
+            if previous != options and not compatible_upgrade:
+                raise ConsolidationError("Banco existente usa outra configuração; mantenha as opções originais. A troca de UTF-8 para auto só é aceita no banco provisório.")
         connection.execute("PRAGMA journal_mode=DELETE")
         connection.execute("PRAGMA synchronous=FULL")
         connection.execute("PRAGMA cache_size=-65536")
@@ -204,7 +211,7 @@ def _connect(path, root, options, *, create):
                 CREATE TABLE configuracao(chave TEXT PRIMARY KEY, valor TEXT NOT NULL);
                 CREATE TABLE fontes(id INTEGER PRIMARY KEY, caminho TEXT NOT NULL UNIQUE,
                     assinatura TEXT NOT NULL, sha256 TEXT NOT NULL, completo INTEGER NOT NULL DEFAULT 0,
-                    linhas INTEGER NOT NULL DEFAULT 0, novos INTEGER NOT NULL DEFAULT 0);
+                    linhas INTEGER NOT NULL DEFAULT 0, novos INTEGER NOT NULL DEFAULT 0, encoding TEXT);
                 CREATE TABLE pastas(caminho TEXT PRIMARY KEY, identidade TEXT NOT NULL);
                 CREATE TABLE registros(hash BLOB PRIMARY KEY CHECK(length(hash)=32), dados TEXT NOT NULL,
                     fonte_id INTEGER NOT NULL, tabela_origem TEXT) WITHOUT ROWID;
@@ -213,6 +220,8 @@ def _connect(path, root, options, *, create):
             connection.executemany("INSERT INTO configuracao VALUES (?,?)", [
                 ("formato", "1"), ("raiz", str(root)), ("opcoes", _json(options)), ("estado", "importando")])
             connection.commit()
+        elif "encoding" not in {row[1] for row in connection.execute("PRAGMA table_info(fontes)")}:
+            connection.execute("ALTER TABLE fontes ADD COLUMN encoding TEXT")
         return connection
     except BaseException:
         connection.close()
@@ -228,16 +237,28 @@ def _import_source(connection, root, name, options, batch_size, progress):
     path = root / name
     _event(progress, "hashing_source", arquivo=name)
     signature, checksum = _fingerprint(path)
-    saved = connection.execute("SELECT id, assinatura, sha256, completo, novos FROM fontes WHERE caminho=?", (name,)).fetchone()
+    saved = connection.execute("SELECT id, assinatura, sha256, completo, novos, encoding FROM fontes WHERE caminho=?", (name,)).fetchone()
+    source_encoding = options["encoding"]
     if saved:
-        source_id, expected, digest, complete, new_count = saved
+        source_id, expected, digest, complete, new_count, source_encoding = saved
         if expected != _json(signature) or digest != checksum:
             raise ConsolidationError(f"Origem mudou desde a importação: {name!r}. Reconstrua em outro banco; fontes preservadas.")
         if complete:
             _event(progress, "source_already_imported", arquivo=name)
             return
+    from .source_encoding import TEXT_SUFFIXES, detect
+    if path.suffix.casefold() in TEXT_SUFFIXES:
+        source_encoding = source_encoding or options["encoding"]
+        if source_encoding == "auto":
+            _event(progress, "checking_encoding", arquivo=name)
+            source_encoding = detect(path)
+        _event(progress, "encoding_selected", arquivo=name, encoding=source_encoding)
     else:
-        cursor = connection.execute("INSERT INTO fontes(caminho, assinatura, sha256) VALUES (?,?,?)", (name, _json(signature), checksum))
+        source_encoding = None
+    if saved:
+        connection.execute("UPDATE fontes SET encoding=? WHERE id=?", (source_encoding, source_id))
+    else:
+        cursor = connection.execute("INSERT INTO fontes(caminho, assinatura, sha256,encoding) VALUES (?,?,?,?)", (name, _json(signature), checksum, source_encoding))
         source_id, new_count = cursor.lastrowid, 0
     rows_read, pending = 0, 0
     connection.execute("BEGIN IMMEDIATE")
@@ -247,7 +268,7 @@ def _import_source(connection, root, name, options, batch_size, progress):
         connection.commit()
         _event(progress, "rows_committed", arquivo=name, linhas_lidas=rows_read, novos_acumulados=new_count)
 
-    reader = _rows(path, options["encoding"], options["delimiter"])
+    reader = _rows(path, source_encoding, options["delimiter"])
     try:
         for table, row in reader:
             payload = _json(row)
@@ -374,7 +395,8 @@ def consolidate(folder, *, remove_sources=False, encoding="utf-8-sig", delimiter
         raise ConsolidationError("Escolha uma pasta de dados real, fora de links, backup e raiz do sistema.")
     if not isinstance(batch_size, int) or not 1 <= batch_size <= 100000:
         raise ConsolidationError("O lote precisa ter entre 1 e 100000 registros.")
-    "".encode(encoding)
+    if encoding != "auto":
+        codecs.lookup(encoding)
     if delimiter is not None and (len(delimiter) != 1 or delimiter in '\r\n\0"'):
         raise ConsolidationError("Separador inválido.")
     options = {"encoding": encoding, "delimiter": delimiter, "txt": "lines", "hash": "sha256-canonical-json-v1"}
@@ -398,12 +420,14 @@ def consolidate(folder, *, remove_sources=False, encoding="utf-8-sig", delimiter
         create = not output.exists()
         if create and not current_files:
             raise ConsolidationError("Nenhuma fonte CSV, TXT, XLSX ou SQLite encontrada fora de backup.")
-        connection = _connect(output, root, options, create=create)
+        connection = _connect(output, root, options, create=create, allow_auto_upgrade=output == pending)
         state = connection.execute("SELECT valor FROM configuracao WHERE chave='estado'").fetchone()[0]
         if output == pending:
             saved_files, saved_dirs = _manifest(connection)
             if saved_files.keys() - current_files.keys():
                 raise ConsolidationError("Uma fonte registrada desapareceu; fontes restantes preservadas.")
+            from .source_encoding import upgrade_to_auto
+            upgrade_to_auto(connection, root, options, progress)
             for name, identity in current_dirs.items():
                 if name in saved_dirs and saved_dirs[name] != identity:
                     raise ConsolidationError("Uma pasta registrada foi substituída.")
@@ -415,6 +439,8 @@ def consolidate(folder, *, remove_sources=False, encoding="utf-8-sig", delimiter
                     _import_source(connection, root, name, options, batch_size, progress)
                 except ConsolidationError as error:
                     raise ConsolidationError(f"Fonte {name!r}: {error}") from None
+                except UnicodeDecodeError:
+                    raise ConsolidationError(f"Falha de codificação em {name!r}. Tente --encoding auto (BOM/UTF-8/CP1252); fontes preservadas.") from None
                 except (UnicodeError, csv.Error, sqlite3.Error, CatalogError) as error:
                     raise ConsolidationError(f"Falha ao ler {name!r} ({type(error).__name__}); confira codificação, CSV e integridade SQLite. Fontes preservadas.") from None
             count = _verify(connection, progress)

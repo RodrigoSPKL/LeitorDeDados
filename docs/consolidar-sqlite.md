@@ -38,7 +38,31 @@ No XLSX, datas/horários/durações usam objetos JSON com as chaves `$excel_date
 
 A leitura usa [modo somente leitura do openpyxl](https://openpyxl.readthedocs.io/en/stable/optimized.html), ignorando dimensões incorretas declaradas pelo exportador para não truncar abas. Fórmulas e resultados salvos são lidos separadamente conforme as [opções de carregamento da biblioteca](https://openpyxl.readthedocs.io/en/stable/tutorial.html#loading-from-a-file). A [proteção XML recomendada pelo projeto](https://openpyxl.readthedocs.io/en/stable/#security) é uma dependência obrigatória do suporte XLSX.
 
-O padrão de CSV/TXT é UTF-8 com BOM opcional, com decodificação estrita. Para um lote inteiro em Windows-1252, use `--encoding cp1252` **desde a primeira execução**. Não há substituição silenciosa de caracteres. Lotes com codificações diferentes devem ser convertidos previamente para uma codificação comum. Não adicione essa opção a um banco já iniciado com outra configuração.
+O padrão de CSV/TXT é UTF-8 com BOM opcional, com decodificação estrita. Para um lote inteiro em Windows-1252, use `--encoding cp1252` **desde a primeira execução**. Não há substituição silenciosa de caracteres. Também existe `--encoding auto`, descrito abaixo, para arquivos com codificações diferentes. Alterações arbitrárias de codificação/separador em um banco existente continuam bloqueadas.
+
+### CSV/TXT com `UnicodeDecodeError` ou codificações diferentes
+
+Atualize e execute na mesma pasta de dados, usando o ambiente virtual já preparado para XLSX:
+
+```bash
+PROJETO="$HOME/LeitorDeDados-linux"
+git -C "$PROJETO" pull --ff-only &&
+"$PROJETO/.venv/bin/python" "$PROJETO/scripts/consolidar_sqlite.py" --encoding auto --apagar-fontes
+```
+
+Sem XLSX, pode usar `python3` em vez do Python do ambiente virtual. Mantenha eventuais opções originais como `--delimiter` e o mesmo caminho da pasta. **Não apague o banco provisório nem os arquivos de origem para tentar novamente.**
+
+O modo `auto` decide por arquivo, antes de gravar suas novas linhas:
+
+1. Se houver BOM, valida integralmente UTF-8, UTF-16 ou UTF-32 conforme esse marcador.
+2. Sem BOM, valida o arquivo inteiro como UTF-8; se essa decodificação falhar, tenta Windows-1252 estritamente.
+3. Se nenhum candidato funcionar, se houver NUL inesperado ou se o arquivo mudar durante a leitura, interrompe sem apagar fontes. Não usa `errors=replace`, não descarta bytes e não muda de codificação no meio do arquivo.
+
+Essa é uma **política de escolha, não uma identificação infalível**: bytes podem ser válidos em mais de uma codificação. UTF-8 tem preferência; CP1252 é a alternativa definida para os lotes legados. Se a codificação real for conhecida e diferente, especifique-a desde o início ou converta uma cópia das fontes antes de iniciar o lote. UTF-16/32 sem BOM e arquivos que misturam codificações internamente exigem tratamento explícito. O log `encoding_selected` e a coluna `fontes.encoding` registram a escolha aplicada.
+
+Uma carga **provisória** iniciada com o padrão antigo `utf-8-sig` pode ser migrada para `auto`, desde que as demais opções sejam mantidas e todas as fontes ainda existam. Fontes concluídas mantêm a codificação já usada. Se o arquivo interrompido ainda não havia confirmado linhas, ele é retomado com a codificação escolhida. Se havia registros confirmados com uma interpretação diferente, o importador verifica as fontes, remove no provisório somente os registros introduzidos por essa origem e relê todas as fontes para restaurar ocorrências compartilhadas corretamente. A alteração do banco provisório é transacional; os arquivos originais permanecem intactos. Essa recuperação pode exigir bastante leitura adicional.
+
+Depois de adotar `auto`, continue usando `--encoding auto` nas próximas execuções. A migração não muda automaticamente um banco final já publicado, nem troca uma política explícita `cp1252` por outra. As conferências de hash e integridade e o bloqueio da limpeza em falhas permanecem iguais.
 
 Cada registro convertido tem limite de 4 MiB; cada tabela/CSV admite até 256 campos. Os nomes das colunas são preservados, inclusive maiúsculas, espaços e acentos. Zeros iniciais dos textos permanecem. Não infere CPF, nomes ou tipos em CSV. Não descompacta RAR/ZIP/7z: faça a extração antes e guarde os compactados em `backup`.
 
