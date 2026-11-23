@@ -25,6 +25,8 @@ DATA_PATH=/dados/meu-lote/.leitor/published bash /opt/leitor-dados/scripts/linux
 
 ## Rodar no Linux
 
+Para transformar CSV, TXT com texto livre por linha e bancos SQLite em **um SQLite com o nome da pasta atual**, deduplicando pelo SHA-256 de todos os campos, use o [consolidador SQLite](docs/consolidar-sqlite.md). Ele ignora `backup`; a opção `--apagar-fontes` remove as fontes e subpastas somente após a importação e verificação completas. Esse fluxo é independente do catálogo e da API abaixo.
+
 Para apenas descompactar RARs e mover os compactados concluídos para `backup`, sem importar para o banco, usar o [script de extração e backup](docs/descompactar-rars.md). Ele também trata os conjuntos multipartes identificados pelo descompactador.
 
 Para preservar uma extração completa e limpar apenas as tentativas parciais `.rar-pending-*`, usar a [limpeza de parciais](docs/limpeza-parciais.md). O padrão mostra uma prévia; há opções de quarentena e exclusão permanente. Arquivos com `(2)` no nome são preservados.
