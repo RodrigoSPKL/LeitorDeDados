@@ -136,15 +136,19 @@ def _discover(root: Path) -> list[Path]:
 
 
 def _extract_set(archive: Path, volumes: list[Path], expanded: int, root: Path, backup_run: Path,
-                 backend: str = "unar") -> Path:
-    output = archive.parent / (archive.stem + "_extraido")
+                 backend: str = "unar", *, output_override: Path | None = None,
+                 keep_sources: bool = False) -> Path:
+    output = output_override or archive.parent / (archive.stem + "_extraido")
+    if output.resolve() == root.resolve() or not output.resolve().is_relative_to(root.resolve()):
+        raise ExtractionError("A saída precisa ficar dentro da pasta de dados.")
+    output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists() or output.is_symlink():
         raise ExtractionError(f"A pasta de saída já existe: {output.name}. Confira seu conteúdo antes de repetir.")
-    free = shutil.disk_usage(archive.parent).free
+    free = shutil.disk_usage(output.parent).free
     if expanded > free:
         raise ExtractionError(f"Espaço livre insuficiente: necessários aproximadamente {expanded} bytes; livres {free} bytes.")
     identities = {path: (path.stat().st_size, path.stat().st_mtime_ns) for path in volumes}
-    staging = Path(tempfile.mkdtemp(prefix=".rar-pending-", dir=archive.parent))
+    staging = Path(tempfile.mkdtemp(prefix=".rar-pending-", dir=output.parent))
     log_directory = backup_run / "logs"
     log_directory.mkdir(parents=True, exist_ok=True)
     log_path = log_directory / (uuid.uuid4().hex + f".{backend}.log")
@@ -175,6 +179,9 @@ def _extract_set(archive: Path, volumes: list[Path], expanded: int, root: Path, 
     if any(path.is_symlink() or (path.stat().st_size, path.stat().st_mtime_ns) != identity
            for path, identity in identities.items()):
         raise ExtractionError(f"Uma parte mudou durante a extração; originais preservados e saída em {staging.name}.")
+    if keep_sources:
+        staging.rename(output)
+        return output
     destinations = {path: backup_run / path.relative_to(root) for path in volumes}
     for destination in destinations.values():
         destination.parent.mkdir(parents=True, exist_ok=True)

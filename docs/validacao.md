@@ -4,7 +4,7 @@ Ambiente de desenvolvimento: Windows, CPython 3.14 e ambiente virtual local; dep
 
 ## Verificações realizadas
 
-**135 testes automatizados foram executados: 133 passaram e 2 foram ignorados**, porque o Windows deste ambiente não permite criar os links simbólicos exigidos por esses casos. Também foram executadas as verificações por CLI e HTTP abaixo.
+**150 testes automatizados foram executados: 148 passaram e 2 foram ignorados**, porque o Windows deste ambiente não permite criar os links simbólicos exigidos por esses casos. Também foram executadas as verificações por CLI e HTTP abaixo.
 
 - Testes automatizados de importação CSV/JSONL, normalização, zeros iniciais, lotes, fontes mistas, falhas e publicação de versões.
 - Testes de descoberta e extração recursiva ZIP, ZIP64 e TAR com gzip/bzip2/xz; cache, diretórios aninhados, preservação dos originais, limites de expansão, metadados e caminhos inválidos.
@@ -22,6 +22,7 @@ Ambiente de desenvolvimento: Windows, CPython 3.14 e ambiente virtual local; dep
 - Diagnóstico de extração com código de retorno, log completo do `unar`, trecho final limitado sem controles de terminal, erros de listagem e relatório persistido em `backup/last-extraction-report.json`.
 - Backend UnRAR simulado: extração completa antes do backup, arquivos preservados e diagnóstico em caso de CRC, dependência conferida antes de mutações e recusa de membros com nomes equivalentes. Os dois backends reais precisam ser confirmados no Linux de destino.
 - Limpeza de parciais: prévia sem alterações, quarentena reversível e exclusão apenas dos diretórios temporários selecionados; preservação dos completos, backups e nomes com `(2)`; recusa de alvos externos, links simulados, identidade substituída e reservas de extração ativas.
+- Reset a partir de backup com backend simulado: teste integral antes de apagar, originais preservados, ausência de RARs abortando sem exclusão, deduplicação por SHA-256 dos conjuntos, prevenção de repetição de aninhados, conflitos de versões recusados, pontos de montagem e raízes proibidos; falha após exclusão registrada com backup preservado.
 - Construção da demonstração CSV com cinco registros e de uma versão mista CSV/JSONL com sete registros; integridade completa e checksums conferidos.
 - Servidor Uvicorn local real: liveness, readiness autenticado, duas páginas de consulta por CPF e HTML com CSP verificados por HTTP.
 - JavaScript da interface: sintaxe e comportamento de estados, paginação, retry e renderização como texto verificados automaticamente.

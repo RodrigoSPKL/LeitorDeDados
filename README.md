@@ -29,6 +29,8 @@ Para apenas descompactar RARs e mover os compactados concluídos para `backup`, 
 
 Para preservar uma extração completa e limpar apenas as tentativas parciais `.rar-pending-*`, usar a [limpeza de parciais](docs/limpeza-parciais.md). O padrão mostra uma prévia; há opções de quarentena e exclusão permanente. Arquivos com `(2)` no nome são preservados.
 
+Para apagar o conteúdo da pasta de dados, preservar `backup` e reconstruir as extrações com UnRAR, usar o [reset completo de extração](docs/refazer-extracao.md). O comando exige um caminho explícito e `--apply`, testa os RARs antes de apagar e evita repetir conjuntos compactados idênticos.
+
 Copiar ou descompactar o projeto no servidor. Com Docker Engine, plugin Docker Compose e Python 3.10+ instalados, executar na raiz:
 
 ```bash

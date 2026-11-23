@@ -58,6 +58,25 @@ class ExtractRarsTests(unittest.TestCase):
         self.assertEqual((self.root / "file with [spaces]_extraido" / "data.csv").read_bytes(), b"complete output")
         self.assertIn("All OK", next((self.root / "backup").rglob("*.unrar.log")).read_text())
 
+    def test_restore_output_override_keeps_backup_archives_in_place(self):
+        saved = self.root / "backup" / "old-run"
+        saved.mkdir(parents=True)
+        original = saved / self.archive.name
+        self.archive.rename(original)
+        output = self.root / "fresh" / "archive_extraido"
+
+        def extract(command, **kwargs):
+            self.assertEqual(command[-2], str(original))
+            (Path(command[-1]) / "data.csv").write_bytes(b"fresh")
+            return SimpleNamespace(returncode=0)
+
+        with patch.object(rar.subprocess, "run", side_effect=extract), redirect_stdout(io.StringIO()):
+            result = rar._extract_set(original, [original], 10, self.root, self.root / "backup" / "new-run", "unrar",
+                                      output_override=output, keep_sources=True)
+        self.assertEqual(result, output)
+        self.assertEqual(original.read_bytes(), b"original archive")
+        self.assertEqual((output / "data.csv").read_bytes(), b"fresh")
+
     def test_unrar_failure_preserves_original_and_reports_backend_error(self):
         def fail(command, **kwargs):
             self.unrar_stub(command, **kwargs)
