@@ -72,12 +72,45 @@ class ExtractRarsTests(unittest.TestCase):
     def test_failed_extraction_keeps_archive_and_partial_output_outside_backup(self):
         def failed(command, **kwargs):
             self.extract_stub(command, **kwargs)
+            kwargs["stdout"].write(b"Extracting data.csv\nChecksum error: data.csv\n")
             return SimpleNamespace(returncode=1)
         report = self.run_folder(extractor=failed)
         self.assertEqual(len(report["failures"]), 1)
+        failure = report["failures"][0]
+        self.assertEqual((failure["tool"], failure["tool_exit_code"]), ("unar", 1))
+        self.assertIn("Checksum error", failure["diagnostic"])
+        self.assertIn("Checksum error", Path(failure["log"]).read_text())
+        self.assertTrue(Path(failure["partial_output"]).is_dir())
+        self.assertEqual(json.loads((self.root / "backup" / "last-extraction-report.json").read_text(encoding="utf-8")), report)
         self.assertEqual(self.archive.read_bytes(), b"original archive")
         self.assertFalse(list((self.root / "backup").rglob("*.rar")))
         self.assertTrue(list(self.root.glob(".rar-pending-*")))
+
+    def test_lsar_failure_preserves_backend_message_and_exit_status(self):
+        def failed(command, **kwargs):
+            kwargs["stderr"].write(b"Cannot open next volume: missing.part0002.rar\n")
+            return SimpleNamespace(returncode=2)
+        with patch.object(rar.subprocess, "run", side_effect=failed), self.assertRaises(rar.ExtractionError) as caught:
+            rar._inspect(self.archive)
+        self.assertIn("Cannot open next volume", str(caught.exception))
+        self.assertEqual(caught.exception.details["tool_exit_code"], 2)
+        self.assertEqual(self.archive.read_bytes(), b"original archive")
+
+    def test_diagnostic_tail_is_bounded_and_does_not_emit_terminal_escape_sequences(self):
+        stream = io.BytesIO(b"old output" * 2000 + b"\nLAST: \x1b[31mCRC failure\x00\n")
+        diagnostic = rar._diagnostic_tail(stream)
+        self.assertIn("LAST:", diagnostic)
+        self.assertNotIn("\x1b", diagnostic)
+        self.assertNotIn("\0", diagnostic)
+        self.assertIn("\\x1b", diagnostic)
+        self.assertLess(len(diagnostic), 4200)
+
+    def test_wrong_format_reports_detected_format_instead_of_generic_rar_error(self):
+        def not_rar(command, **kwargs):
+            kwargs["stdout"].write(json.dumps({"lsarFormatName": "7-Zip", "lsarContents": []}).encode())
+            return SimpleNamespace(returncode=0)
+        with patch.object(rar.subprocess, "run", side_effect=not_rar), self.assertRaisesRegex(rar.ExtractionError, "7-Zip"):
+            rar._inspect(self.archive)
 
     def test_multipart_is_processed_once_and_all_volumes_remain_together(self):
         self.archive.unlink()

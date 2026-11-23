@@ -14,23 +14,59 @@ import uuid
 
 
 class ExtractionError(ValueError):
-    pass
+    def __init__(self, message: str, *, details: dict | None = None):
+        super().__init__(message)
+        self.details = dict(details or {})
+
+
+def _diagnostic_tail(stream, limit: int = 4096) -> str:
+    stream.flush()
+    stream.seek(0, os.SEEK_END)
+    stream.seek(max(0, stream.tell() - limit))
+    value = stream.read(limit).decode("utf-8", errors="replace").strip()
+    # Preserve readable diagnostics without forwarding terminal control codes.
+    return "".join(char if char in "\n\t" or (ord(char) >= 32 and ord(char) != 127)
+                   else f"\\x{ord(char):02x}" for char in value)
+
+
+def _save_report(backup: Path, report: dict) -> None:
+    temporary = backup / (".report-" + uuid.uuid4().hex + ".json")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            json.dump(report, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(backup / "last-extraction-report.json")
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _inspect(archive: Path) -> tuple[list[Path], int]:
     # A file bounds memory use for very large archive listings.
-    with tempfile.TemporaryFile() as listing:
+    with tempfile.TemporaryFile() as listing, tempfile.TemporaryFile() as errors:
         result = subprocess.run(["lsar", "-j", "-nr", str(archive)],
-                                stdin=subprocess.DEVNULL, stdout=listing, stderr=subprocess.DEVNULL)
-        if result.returncode or listing.tell() > 64 * 1024**2:
-            raise ExtractionError("Não foi possível listar o RAR; confira integridade, senha e partes faltantes.")
+                                stdin=subprocess.DEVNULL, stdout=listing, stderr=errors)
+        if listing.tell() > 64 * 1024**2:
+            raise ExtractionError("A listagem do RAR excede o limite de 64 MiB.")
+        if result.returncode:
+            diagnostic = _diagnostic_tail(errors) or _diagnostic_tail(listing)
+            raise ExtractionError(
+                f"lsar falhou com código {result.returncode}. "
+                + (diagnostic or "Confira integridade, senha e partes faltantes."),
+                details={"tool": "lsar", "tool_exit_code": result.returncode, "diagnostic": diagnostic},
+            )
         listing.seek(0)
         try:
             info = json.load(listing)
         except (ValueError, UnicodeError):
             raise ExtractionError("Listagem de arquivo inválida.") from None
-    if not isinstance(info, dict) or info.get("lsarError") or not str(info.get("lsarFormatName", "")).upper().startswith("RAR"):
-        raise ExtractionError("Arquivo não reconhecido como RAR íntegro.")
+    if not isinstance(info, dict):
+        raise ExtractionError("Listagem do RAR não contém um objeto JSON.")
+    if info.get("lsarError"):
+        raise ExtractionError(f"lsar informou erro interno {info['lsarError']}.")
+    detected_format = str(info.get("lsarFormatName", ""))
+    if not detected_format.upper().startswith("RAR"):
+        raise ExtractionError(f"Formato encontrado: {detected_format!r}; este script processa somente RAR.")
     properties = info.get("lsarProperties", {})
     if not isinstance(properties, dict) or properties.get("XADVolumeScanningFailed"):
         raise ExtractionError("Não foi possível identificar todas as partes do RAR.")
@@ -96,14 +132,28 @@ def _discover(root: Path) -> list[Path]:
 def _extract_set(archive: Path, volumes: list[Path], expanded: int, root: Path, backup_run: Path) -> Path:
     output = archive.parent / (archive.stem + "_extraido")
     if output.exists() or output.is_symlink():
-        raise ExtractionError("A pasta de saída já existe; confira seu conteúdo antes de repetir.")
-    if expanded > shutil.disk_usage(archive.parent).free:
-        raise ExtractionError("Espaço livre insuficiente para a extração estimada.")
+        raise ExtractionError(f"A pasta de saída já existe: {output.name}. Confira seu conteúdo antes de repetir.")
+    free = shutil.disk_usage(archive.parent).free
+    if expanded > free:
+        raise ExtractionError(f"Espaço livre insuficiente: necessários aproximadamente {expanded} bytes; livres {free} bytes.")
     identities = {path: (path.stat().st_size, path.stat().st_mtime_ns) for path in volumes}
     staging = Path(tempfile.mkdtemp(prefix=".rar-pending-", dir=archive.parent))
-    result = subprocess.run(["unar", "-nr", "-D", "-o", str(staging), str(archive)], stdin=subprocess.DEVNULL)
-    if result.returncode:
-        raise ExtractionError(f"Extração falhou. RARs preservados; saída parcial em {staging.name}.")
+    log_directory = backup_run / "logs"
+    log_directory.mkdir(parents=True, exist_ok=True)
+    log_path = log_directory / (uuid.uuid4().hex + ".unar.log")
+    print(f"Extraindo; acompanhe o log: {log_path}", flush=True)
+    with log_path.open("x+b") as log:
+        result = subprocess.run(["unar", "-nr", "-D", "-o", str(staging), str(archive)],
+                                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+        if result.returncode:
+            diagnostic = _diagnostic_tail(log)
+            raise ExtractionError(
+                f"unar falhou com código {result.returncode}. "
+                f"RARs preservados; saída parcial em {staging.name}. Log: {log_path}.\n"
+                + (diagnostic or "O descompactador não forneceu detalhes adicionais."),
+                details={"tool": "unar", "tool_exit_code": result.returncode,
+                         "log": str(log_path), "partial_output": str(staging), "diagnostic": diagnostic},
+            )
     for current, directories, files in os.walk(staging, followlinks=False):
         for name in directories + files:
             mode = (Path(current) / name).lstat().st_mode
@@ -171,12 +221,17 @@ def extract_folder(folder: Path, max_depth: int = 12) -> dict:
                     report["backed_up_volumes"] += len(volumes)
                     print(f"Concluído: {output.relative_to(root)}", flush=True)
                 except (ExtractionError, OSError) as error:
-                    report["failures"].append({"archive": archive.relative_to(root).as_posix(), "error": str(error)})
+                    failure = {"archive": archive.relative_to(root).as_posix(), "error": str(error)}
+                    if isinstance(error, ExtractionError):
+                        failure.update(error.details)
+                    report["failures"].append(failure)
                     print(f"Preservado por erro: {archive.relative_to(root)}: {error}", flush=True)
         remaining = _discover(root)
         report["remaining_rars"] = len(remaining)
         if remaining and not report["failures"]:
             report["failures"].append({"error": "Limite de aninhamento atingido; RARs restantes foram preservados."})
+        _save_report(backup, report)
+        print(f"Relatório salvo: {backup / 'last-extraction-report.json'}", flush=True)
         return report
     finally:
         lock.rmdir()

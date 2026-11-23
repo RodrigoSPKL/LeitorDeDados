@@ -28,6 +28,7 @@ python3 "$HOME/LeitorDeDados-linux/scripts/extrair_rars.py" --folder "/caminho/d
 - Move os originais para `backup/EXECUCAO/...`, preservando os caminhos relativos das subpastas. Cada execução tem um identificador próprio para evitar sobrescrever backups anteriores.
 - Processa também novos RARs encontrados dentro do conteúdo extraído, até 12 rodadas. O limite pode ser alterado com `--max-depth`.
 - Mantém arquivos e pastas de outros formatos. A saída do programa termina com um relatório JSON com contagem de conjuntos, volumes, falhas e RARs restantes.
+- Salva esse relatório também em `backup/last-extraction-report.json`. A saída completa de cada chamada do `unar` fica em `backup/EXECUCAO/logs/ID.unar.log`; o caminho é mostrado antes da extração.
 
 Exemplo:
 
@@ -41,6 +42,16 @@ documento.txt                   documento.txt
 ## Falhas e retomada
 
 O script não sobrescreve uma pasta `_extraido` existente. RARs com falha de extração, volumes ausentes, senha necessária ou listagem inválida permanecem na origem e são relacionados no relatório. Uma extração parcial permanece em `.rar-pending-ID` para conferência; essa pasta não é processada nas próximas execuções.
+
+Para consultar os erros depois que o programa terminar, executar da mesma pasta de origem:
+
+```bash
+cat backup/last-extraction-report.json
+```
+
+Cada falha do descompactador inclui `archive`, `tool`, `tool_exit_code`, `log`, `partial_output` e `diagnostic`. O último campo contém o final da saída do `unar`; o log guarda a saída completa, incluindo mensagens de CRC/checksum, volume ausente, permissões e outros erros que a ferramenta informar. Falhas na listagem incluem a saída disponível do `lsar` e seu código de retorno. Não interpretar o código sozinho como prova de um tipo específico de falha.
+
+Enquanto a extração estiver rodando, acompanhar o arquivo de log indicado com `tail -f "CAMINHO_DO_LOG"` em outro terminal. Os logs podem conter nomes de arquivos e devem permanecer privados. A atualização não recupera mensagens que uma execução antiga deixou apenas no terminal; é necessário repetir a tentativa do RAR que falhou para gerar um novo log. As pastas `.rar-pending-ID` são ignoradas e preservadas.
 
 A estimativa de espaço usa os tamanhos declarados na listagem, comparados ao espaço livre do disco de destino. Isso não é uma reserva de espaço: alterações no disco ou metadados incorretos ainda podem fazer a extração falhar. O original só é movido após o descompactador concluir com sucesso.
 
