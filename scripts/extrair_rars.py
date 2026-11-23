@@ -1,4 +1,4 @@
-"""Extract RAR sets with unar; archive originals only after successful extraction."""
+"""Extract RAR sets with unar or unrar; back up originals only after success."""
 from __future__ import annotations
 
 import argparse
@@ -90,6 +90,7 @@ def _inspect(archive: Path) -> tuple[list[Path], int]:
     if not isinstance(entries, list) or not entries or len(entries) > 100_000:
         raise ExtractionError("RAR vazio ou com quantidade de membros não suportada.")
     expanded = 0
+    names = {}
     for entry in entries:
         if not isinstance(entry, dict):
             raise ExtractionError("Membro de RAR inválido.")
@@ -100,6 +101,11 @@ def _inspect(archive: Path) -> tuple[list[Path], int]:
         parts = PurePosixPath(normalized).parts
         if normalized.startswith("/") or ".." in parts or any(":" in part for part in parts):
             raise ExtractionError("Caminho de extração inseguro.")
+        canonical = "/".join(parts).casefold()
+        directory = bool(entry.get("XADIsDirectory"))
+        if canonical in names and not (directory and names[canonical]):
+            raise ExtractionError("Membros com nomes repetidos ou equivalentes; extração recusada para evitar omissões.")
+        names[canonical] = directory
         if (entry.get("XADIsLink") or entry.get("XADLinkDestination")
                 or entry.get("XADIsHardLink") or entry.get("XADIsUnixSymlink")
                 or any(entry.get(key) for key in ("XADIsFIFO", "XADIsCharacterDevice", "XADIsBlockDevice", "XADIsSocket"))):
@@ -129,7 +135,8 @@ def _discover(root: Path) -> list[Path]:
     return sorted(result)
 
 
-def _extract_set(archive: Path, volumes: list[Path], expanded: int, root: Path, backup_run: Path) -> Path:
+def _extract_set(archive: Path, volumes: list[Path], expanded: int, root: Path, backup_run: Path,
+                 backend: str = "unar") -> Path:
     output = archive.parent / (archive.stem + "_extraido")
     if output.exists() or output.is_symlink():
         raise ExtractionError(f"A pasta de saída já existe: {output.name}. Confira seu conteúdo antes de repetir.")
@@ -140,18 +147,24 @@ def _extract_set(archive: Path, volumes: list[Path], expanded: int, root: Path, 
     staging = Path(tempfile.mkdtemp(prefix=".rar-pending-", dir=archive.parent))
     log_directory = backup_run / "logs"
     log_directory.mkdir(parents=True, exist_ok=True)
-    log_path = log_directory / (uuid.uuid4().hex + ".unar.log")
+    log_path = log_directory / (uuid.uuid4().hex + f".{backend}.log")
     print(f"Extraindo; acompanhe o log: {log_path}", flush=True)
+    if backend == "unrar":
+        command = ["unrar", "x", "-cfg-", "-o-", "-p-", str(archive), str(staging) + os.sep]
+    else:
+        command = ["unar", "-nr", "-D", "-o", str(staging), str(archive)]
     with log_path.open("x+b") as log:
-        result = subprocess.run(["unar", "-nr", "-D", "-o", str(staging), str(archive)],
-                                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+        result = subprocess.run(command,
+                                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                env={key: value for key, value in os.environ.items() if key != "RAR"}
+                                if backend == "unrar" else None)
         if result.returncode:
             diagnostic = _diagnostic_tail(log)
             raise ExtractionError(
-                f"unar falhou com código {result.returncode}. "
+                f"{backend} falhou com código {result.returncode}. "
                 f"RARs preservados; saída parcial em {staging.name}. Log: {log_path}.\n"
                 + (diagnostic or "O descompactador não forneceu detalhes adicionais."),
-                details={"tool": "unar", "tool_exit_code": result.returncode,
+                details={"tool": backend, "tool_exit_code": result.returncode,
                          "log": str(log_path), "partial_output": str(staging), "diagnostic": diagnostic},
             )
     for current, directories, files in os.walk(staging, followlinks=False):
@@ -182,15 +195,17 @@ def _extract_set(archive: Path, volumes: list[Path], expanded: int, root: Path, 
     return output
 
 
-def extract_folder(folder: Path, max_depth: int = 12) -> dict:
+def extract_folder(folder: Path, max_depth: int = 12, backend: str = "unar") -> dict:
     if max_depth < 1:
         raise ExtractionError("max-depth deve ser positivo.")
+    if backend not in ("unar", "unrar"):
+        raise ExtractionError("backend deve ser unar ou unrar.")
     root = folder.resolve(strict=True)
     if not root.is_dir() or root.parent == root or root.name.casefold() == "backup":
         raise ExtractionError("Escolha a pasta dos dados, fora de backup.")
-    for tool in ("lsar", "unar"):
+    for tool in ("lsar", backend):
         if shutil.which(tool) is None:
-            raise ExtractionError("Instale as ferramentas no Linux: sudo apt install unar")
+            raise ExtractionError("Instale as ferramentas no Linux: sudo apt install unar unrar")
     backup = root / "backup"
     if backup.is_symlink():
         raise ExtractionError("backup não pode ser um link simbólico.")
@@ -200,7 +215,7 @@ def extract_folder(folder: Path, max_depth: int = 12) -> dict:
         lock.mkdir()
     except FileExistsError:
         raise ExtractionError("Há outra execução ou reserva pendente em .rar-extraction-lock.") from None
-    report = {"extracted_sets": 0, "backed_up_volumes": 0, "failures": []}
+    report = {"backend": backend, "extracted_sets": 0, "backed_up_volumes": 0, "failures": []}
     backup_run = backup / (datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8])
     seen = set()
     try:
@@ -216,7 +231,7 @@ def extract_folder(folder: Path, max_depth: int = 12) -> dict:
                 try:
                     volumes, expanded = _inspect(archive)
                     seen.update(volumes)
-                    output = _extract_set(volumes[0], volumes, expanded, root, backup_run)
+                    output = _extract_set(volumes[0], volumes, expanded, root, backup_run, backend)
                     report["extracted_sets"] += 1
                     report["backed_up_volumes"] += len(volumes)
                     print(f"Concluído: {output.relative_to(root)}", flush=True)
@@ -241,9 +256,11 @@ def main() -> int:
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--folder", type=Path, default=Path.cwd())
     cli.add_argument("--max-depth", type=int, default=12)
+    cli.add_argument("--backend", choices=("unar", "unrar"), default="unar",
+                     help="Descompactador usado; lsar continua necessário para a listagem")
     args = cli.parse_args()
     try:
-        report = extract_folder(args.folder, args.max_depth)
+        report = extract_folder(args.folder, args.max_depth, args.backend)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 1 if report["failures"] else 0
     except (ExtractionError, OSError) as error:

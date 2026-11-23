@@ -4,7 +4,7 @@ Ambiente de desenvolvimento: Windows, CPython 3.14 e ambiente virtual local; dep
 
 ## Verificações realizadas
 
-**120 testes automatizados foram executados: 118 passaram e 2 foram ignorados**, porque o Windows deste ambiente não permite criar os links simbólicos exigidos por esses casos. Também foram executadas as verificações por CLI e HTTP abaixo.
+**124 testes automatizados foram executados: 122 passaram e 2 foram ignorados**, porque o Windows deste ambiente não permite criar os links simbólicos exigidos por esses casos. Também foram executadas as verificações por CLI e HTTP abaixo.
 
 - Testes automatizados de importação CSV/JSONL, normalização, zeros iniciais, lotes, fontes mistas, falhas e publicação de versões.
 - Testes de descoberta e extração recursiva ZIP, ZIP64 e TAR com gzip/bzip2/xz; cache, diretórios aninhados, preservação dos originais, limites de expansão, metadados e caminhos inválidos.
@@ -20,6 +20,7 @@ Ambiente de desenvolvimento: Windows, CPython 3.14 e ambiente virtual local; dep
 - Validação estática de Compose, arquivos UTF-8, caminhos, documentação e pacote de distribuição.
 - Script de extração e backup de RARs com backend simulado: nomes com espaços, multipartes, exclusão de backups, extração recursiva, originais preservados em falhas e proteção contra sobrescrita. O backend `unar` real ainda exige validação no Linux de destino.
 - Diagnóstico de extração com código de retorno, log completo do `unar`, trecho final limitado sem controles de terminal, erros de listagem e relatório persistido em `backup/last-extraction-report.json`.
+- Backend UnRAR simulado: extração completa antes do backup, arquivos preservados e diagnóstico em caso de CRC, dependência conferida antes de mutações e recusa de membros com nomes equivalentes. Os dois backends reais precisam ser confirmados no Linux de destino.
 - Construção da demonstração CSV com cinco registros e de uma versão mista CSV/JSONL com sete registros; integridade completa e checksums conferidos.
 - Servidor Uvicorn local real: liveness, readiness autenticado, duas páginas de consulta por CPF e HTML com CSP verificados por HTTP.
 - JavaScript da interface: sintaxe e comportamento de estados, paginação, retry e renderização como texto verificados automaticamente.

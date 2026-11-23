@@ -6,6 +6,8 @@ Este comando é independente da importação do banco. Executa no Linux com Pyth
 sudo apt install -y unar
 ```
 
+Há também a opção de extração com o UnRAR (`sudo apt install unrar`). A listagem de segurança continua usando `lsar`, portanto o pacote `unar` também é necessário nesse modo.
+
 Manter o código separado dos dados. Entrar na pasta que contém os RARs e executar:
 
 ```bash
@@ -18,6 +20,19 @@ Sem `--folder`, a origem é a pasta atual. Para escolher explicitamente:
 ```bash
 python3 "$HOME/LeitorDeDados-linux/scripts/extrair_rars.py" --folder "/caminho/dos/dados"
 ```
+
+## Quando o teste passa com UnRAR, mas a extração com unar falha
+
+`unrar t` testa a integridade dos membros selecionados. Ele não realiza a extração nem aciona a movimentação do script para backup. Para fazer a extração completa com esse backend, executar da pasta dos RARs:
+
+```bash
+git -C "$HOME/LeitorDeDados-linux" pull --ff-only &&
+python3 "$HOME/LeitorDeDados-linux/scripts/extrair_rars.py" --backend unrar
+```
+
+O modo `--backend unrar` usa `unrar x` em uma área temporária nova. Ignora configurações extras do UnRAR, não solicita senha e só arquiva os volumes quando a extração completa retorna sucesso. Caminhos e membros são verificados antes; nomes repetidos ou equivalentes quanto à caixa são recusados para evitar omissões silenciosas. As pastas parciais antigas permanecem preservadas e são ignoradas. É necessário espaço para outra extração completa.
+
+O padrão continua sendo `--backend unar`. O campo `backend` do relatório identifica a ferramenta escolhida; logs terminam em `.unar.log` ou `.unrar.log`, conforme o caso. A opção se aplica também aos RARs aninhados encontrados durante a execução. [Comandos do UnRAR](https://manpages.ubuntu.com/manpages/jammy/man1/unrar-nonfree.1.html).
 
 ## Resultado
 

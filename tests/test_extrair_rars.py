@@ -32,11 +32,56 @@ class ExtractRarsTests(unittest.TestCase):
         (staging / "data.csv").write_text("code\nTEST\n", encoding="utf-8")
         return SimpleNamespace(returncode=0)
 
-    def run_folder(self, inspect=None, extractor=None, depth=12):
+    def run_folder(self, inspect=None, extractor=None, depth=12, backend="unar"):
         with patch.object(rar.shutil, "which", return_value="tool"), patch.object(
             rar, "_inspect", side_effect=inspect or (lambda archive: ([archive], 10))
         ), patch.object(rar.subprocess, "run", side_effect=extractor or self.extract_stub), redirect_stdout(io.StringIO()):
-            return rar.extract_folder(self.root, depth)
+            return rar.extract_folder(self.root, depth, backend)
+
+    def unrar_stub(self, command, **kwargs):
+        self.assertEqual(command[:5], ["unrar", "x", "-cfg-", "-o-", "-p-"])
+        self.assertNotIn("RAR", kwargs["env"])
+        self.assertEqual(command[-2], str(self.archive))
+        staging = Path(command[-1])
+        self.assertNotEqual(staging, self.root)
+        (staging / "data.csv").write_bytes(b"complete output")
+        kwargs["stdout"].write(b"All OK\n")
+        return SimpleNamespace(returncode=0)
+
+    def test_unrar_success_performs_full_extraction_and_then_backs_up_original(self):
+        report = self.run_folder(extractor=self.unrar_stub, backend="unrar")
+        self.assertEqual(report["backend"], "unrar")
+        self.assertEqual(report["extracted_sets"], 1)
+        self.assertFalse(report["failures"])
+        self.assertFalse(self.archive.exists())
+        self.assertEqual(next((self.root / "backup").rglob("*.rar")).read_bytes(), b"original archive")
+        self.assertEqual((self.root / "file with [spaces]_extraido" / "data.csv").read_bytes(), b"complete output")
+        self.assertIn("All OK", next((self.root / "backup").rglob("*.unrar.log")).read_text())
+
+    def test_unrar_failure_preserves_original_and_reports_backend_error(self):
+        def fail(command, **kwargs):
+            self.unrar_stub(command, **kwargs)
+            kwargs["stdout"].write(b"CRC failed\n")
+            return SimpleNamespace(returncode=3)
+        report = self.run_folder(extractor=fail, backend="unrar")
+        failure = report["failures"][0]
+        self.assertEqual((failure["tool"], failure["tool_exit_code"]), ("unrar", 3))
+        self.assertIn("CRC failed", failure["diagnostic"])
+        self.assertEqual(self.archive.read_bytes(), b"original archive")
+        self.assertFalse(list((self.root / "backup").rglob("*.rar")))
+
+    def test_duplicate_member_names_are_rejected_before_any_extraction(self):
+        entries = [{"XADFileName": name, "XADFileSize": 1} for name in ("data.csv", "DATA.csv")]
+        with patch.object(rar.subprocess, "run", side_effect=self.inspect_stub(entries=entries)), self.assertRaisesRegex(rar.ExtractionError, "repetidos"):
+            rar._inspect(self.archive)
+
+    def test_missing_unrar_fails_before_creating_backup_or_lock(self):
+        with patch.object(rar.shutil, "which", side_effect=lambda name: None if name == "unrar" else "lsar"):
+            with self.assertRaisesRegex(rar.ExtractionError, "Instale"):
+                rar.extract_folder(self.root, backend="unrar")
+        self.assertTrue(self.archive.exists())
+        self.assertFalse((self.root / "backup").exists())
+        self.assertFalse((self.root / ".rar-extraction-lock").exists())
 
     def test_inspection_identifies_volumes_and_bounds_output_paths(self):
         second = self.root / "second.rar"
