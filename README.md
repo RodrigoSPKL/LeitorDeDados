@@ -27,6 +27,8 @@ DATA_PATH=/dados/meu-lote/.leitor/published bash /opt/leitor-dados/scripts/linux
 
 Para apenas descompactar RARs e mover os compactados concluídos para `backup`, sem importar para o banco, usar o [script de extração e backup](docs/descompactar-rars.md). Ele também trata os conjuntos multipartes identificados pelo descompactador.
 
+Para preservar uma extração completa e limpar apenas as tentativas parciais `.rar-pending-*`, usar a [limpeza de parciais](docs/limpeza-parciais.md). O padrão mostra uma prévia; há opções de quarentena e exclusão permanente. Arquivos com `(2)` no nome são preservados.
+
 Copiar ou descompactar o projeto no servidor. Com Docker Engine, plugin Docker Compose e Python 3.10+ instalados, executar na raiz:
 
 ```bash
