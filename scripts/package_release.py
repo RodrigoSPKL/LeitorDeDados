@@ -7,7 +7,7 @@ def package(root: Path, destination: Path) -> int:
     root = root.resolve()
     roots = {"leitor_dados", "config", "examples", "scripts", "docs", "tests"}
     root_files = {"README.md", "SECURITY.md", "Dockerfile", "compose.yaml", ".dockerignore", ".gitignore", ".gitattributes",
-                  "requirements.txt", "requirements.lock.txt", "requirements-dev.txt", "processar-pasta.sh"}
+                  "requirements.txt", "requirements.lock.txt", "requirements-dev.txt", "requirements-excel.txt", "processar-pasta.sh"}
     allowed = {".py", ".json", ".jsonl", ".csv", ".sh", ".md", ".html"}
     candidates = [root / name for name in root_files]
     for directory in roots:

@@ -25,7 +25,7 @@ DATA_PATH=/dados/meu-lote/.leitor/published bash /opt/leitor-dados/scripts/linux
 
 ## Rodar no Linux
 
-Para transformar CSV, TXT com texto livre por linha e bancos SQLite em **um SQLite com o nome da pasta atual**, deduplicando pelo SHA-256 de todos os campos, use o [consolidador SQLite](docs/consolidar-sqlite.md). Ele ignora `backup`; a opção `--apagar-fontes` remove as fontes e subpastas somente após a importação e verificação completas. Esse fluxo é independente do catálogo e da API abaixo.
+Para transformar CSV, TXT com texto livre por linha, planilhas XLSX e bancos SQLite em **um SQLite com o nome da pasta atual**, deduplicando pelo SHA-256 de todos os campos, use o [consolidador SQLite](docs/consolidar-sqlite.md). Ele ignora `backup`; a opção `--apagar-fontes` remove as fontes e subpastas somente após a importação e verificação completas. XLSX exige instalar as dependências opcionais do manual. Esse fluxo é independente do catálogo e da API abaixo.
 
 Para apenas descompactar RARs e mover os compactados concluídos para `backup`, sem importar para o banco, usar o [script de extração e backup](docs/descompactar-rars.md). Ele também trata os conjuntos multipartes identificados pelo descompactador.
 

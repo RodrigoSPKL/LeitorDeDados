@@ -1,6 +1,6 @@
 # Consolidar a pasta atual em um SQLite deduplicado
 
-Este fluxo independente gera **um arquivo com o nome da pasta raiz**, por exemplo `RAIZ/RAIZ.sqlite`. Não exige Docker, serviço de banco ou dependências Python externas. Requer **Python 3.11+**. O projeto deve estar instalado fora da pasta de dados, por exemplo em `$HOME/LeitorDeDados-linux`.
+Este fluxo independente gera **um arquivo com o nome da pasta raiz**, por exemplo `RAIZ/RAIZ.sqlite`. Não exige Docker ou serviço de banco. CSV, TXT e SQLite usam apenas a biblioteca padrão; **XLSX exige as dependências opcionais abaixo**. Requer **Python 3.11+**. O projeto deve estar instalado fora da pasta de dados, por exemplo em `$HOME/LeitorDeDados-linux`.
 
 Na pasta que contém as fontes:
 
@@ -13,11 +13,30 @@ python3 "$HOME/LeitorDeDados-linux/scripts/consolidar_sqlite.py" --apagar-fontes
 
 Não altere, mova ou acrescente fontes durante a execução. Feche os bancos SQLite de origem e não abra o banco de saída em outro programa durante a carga ou limpeza. As verificações detectam alterações entre as etapas; não substituem acesso exclusivo à pasta. Preserve uma cópia independente dos dados importantes antes de remover as fontes. A pasta `backup` não é criada nem preenchida por este importador.
 
+## Instalar suporte a Excel no Ubuntu
+
+Se aparecer `Arquivo/formato não suportado: ...xlsx` numa versão anterior, essa execução parou no inventário antes de importar ou apagar fontes. Atualize o projeto e instale o leitor num ambiente virtual, mantendo o terminal na pasta dos dados:
+
+```bash
+git -C "$HOME/LeitorDeDados-linux" pull --ff-only &&
+sudo apt-get install -y python3-venv &&
+python3 -m venv "$HOME/LeitorDeDados-linux/.venv" &&
+"$HOME/LeitorDeDados-linux/.venv/bin/python" -m pip install -r "$HOME/LeitorDeDados-linux/requirements-excel.txt" &&
+"$HOME/LeitorDeDados-linux/.venv/bin/python" "$HOME/LeitorDeDados-linux/scripts/consolidar_sqlite.py" --apagar-fontes
+```
+
+Nas próximas execuções, use o Python desse ambiente virtual. Não precisa ativá-lo com `source` nem instalar pacotes Python globalmente. A ausência dessas dependências é detectada antes de abrir/criar o banco de saída quando há XLSX no lote. As configurações e os hashes dos formatos antigos continuam compatíveis; um banco provisório pode ser retomado com as mesmas opções de codificação/separador.
+
 ## Formatos e registros
 
 - **CSV e TSV:** primeira linha obrigatoriamente contém os nomes das colunas; cada registro seguinte vira um objeto JSON. CSV admite campos entre aspas com quebras de linha. Detecta `,`, `;`, TAB ou `|`; `--delimiter ';'` permite definir o separador. Cabeçalhos repetidos, linhas vazias e registros com quantidade errada de campos interrompem a carga.
 - **TXT:** cada linha vira `{"texto":"conteúdo da linha"}`. A primeira linha também é um registro. Preserva espaços e linhas vazias, removendo apenas o terminador de linha. Não interpreta separadores.
+- **XLSX:** percorre todas as abas de dados, inclusive ocultas. A primeira linha não vazia de cada aba é o cabeçalho, com nomes de colunas em texto e sem repetições. Ignora linhas inteiramente vazias e completa células ausentes com JSON null. Dados fora da largura do cabeçalho, cabeçalhos inválidos ou mais de 256 campos interrompem a carga. Preserva textos, números e booleanos com seus tipos; um código armazenado como texto mantém os zeros iniciais. Não transforma a máscara numérica `00000` em zeros adicionais: importa o valor armazenado, não a apresentação visual.
 - **`.db`, `.sqlite`, `.sqlite3`:** somente bancos SQLite reais, fechados e consolidados em `journal_mode=DELETE`, sem WAL/journal pendente. Todas as tabelas físicas de usuário são percorridas. Não copia índices, triggers, estrutura de tabelas vazias ou DDL. Views e tabelas virtuais causam erro; exporte essas fontes para CSV antes de executar. BLOBs ficam como objetos com a chave `$sqlite_blob_base64`; valores SQL NULL permanecem JSON null, números permanecem números e textos permanecem textos.
+
+No XLSX, datas/horários/durações usam objetos JSON com as chaves `$excel_datetime`, `$excel_date`, `$excel_time` ou `$excel_duration_seconds`. Erros de célula ficam em `$excel_error`. Uma fórmula comum é armazenada como `{"$excel_formula":"=1+2","cached":3}`; `cached` é o resultado que já estava salvo no arquivo e pode ser null ou estar desatualizado. **O importador não calcula fórmulas nem acessa links externos.** Fórmulas matriciais/especiais não suportadas interrompem a carga. Importa os dados das células; não preserva imagens, gráficos, estilos, comentários ou a apresentação do documento. `.xls`, `.xlsb` e `.xlsm` continuam fora dos formatos aceitos; exporte para XLSX ou CSV.
+
+A leitura usa [modo somente leitura do openpyxl](https://openpyxl.readthedocs.io/en/stable/optimized.html), ignorando dimensões incorretas declaradas pelo exportador para não truncar abas. Fórmulas e resultados salvos são lidos separadamente conforme as [opções de carregamento da biblioteca](https://openpyxl.readthedocs.io/en/stable/tutorial.html#loading-from-a-file). A [proteção XML recomendada pelo projeto](https://openpyxl.readthedocs.io/en/stable/#security) é uma dependência obrigatória do suporte XLSX.
 
 O padrão de CSV/TXT é UTF-8 com BOM opcional, com decodificação estrita. Para um lote inteiro em Windows-1252, use `--encoding cp1252` **desde a primeira execução**. Não há substituição silenciosa de caracteres. Lotes com codificações diferentes devem ser convertidos previamente para uma codificação comum. Não adicione essa opção a um banco já iniciado com outra configuração.
 
@@ -70,6 +89,6 @@ Uma falha **durante** a limpeza pode deixar algumas fontes já removidas e outra
 
 Uma interrupção forçada (`kill -9`, queda de energia) pode deixar `.consolidar-sqlite.lock`. Só remova essa pasta vazia após confirmar que nenhum importador está ativo. Journals SQLite de saída são recuperados pelo SQLite; não os apague manualmente. Um banco final existente de outro programa não é sobrescrito.
 
-O banco, índice por hash e fontes coexistem no disco até terminar a verificação. A importação não reduz o uso de disco progressivamente apagando pastas. Há várias passagens de leitura, incluindo a conferência integral, e o banco pode ser maior que os CSVs; não há um multiplicador fixo de espaço ou prazo garantido. A memória de cache do SQLite é limitada a aproximadamente 64 MiB, além do processo, registros e metadados de arquivos; o volume de linhas não é carregado todo na RAM.
+O banco, índice por hash e fontes coexistem no disco até terminar a verificação. A importação não reduz o uso de disco progressivamente apagando pastas. Há várias passagens de leitura, incluindo a conferência integral, e o banco pode ser maior que os CSVs; não há um multiplicador fixo de espaço ou prazo garantido. A memória de cache do SQLite é limitada a aproximadamente 64 MiB, além do processo, registros e metadados de arquivos; o volume de linhas não é carregado todo na RAM. No XLSX, as linhas são percorridas em fluxo, mas o leitor também mantém metadados e tabelas de strings compartilhadas de duas leituras da planilha em memória; portanto, o consumo total não fica limitado a 64 MiB.
 
 Prefira disco local Linux com ext4/XFS e espaço livre medido. Este script não usa `chmod/chown`, mas sua execução em exFAT, em filesystem de rede e com volumes enormes ainda não foi validada. Não garante recuperação após falhas de hardware. **Os testes pequenos não comprovam capacidade ou desempenho em 20 bilhões de registros num único SQLite.** Faça o benchmark com uma cópia representativa antes da carga completa.

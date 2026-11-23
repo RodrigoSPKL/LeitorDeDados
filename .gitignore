@@ -41,6 +41,9 @@ backup/
 *.tsv
 *.jsonl
 *.ndjson
+*.xlsx
+*.xls
+*.xlsm
 *.sql
 *.dump
 *.bak
@@ -48,6 +51,7 @@ backup/
 !requirements.txt
 !requirements-dev.txt
 !requirements.lock.txt
+!requirements-excel.txt
 
 # Somente os exemplos fictícios versionados são permitidos.
 !examples/registros.csv

@@ -15,7 +15,7 @@ from .catalog import CatalogError, MAX_ROW_BYTES, _LimitedLines, _header_delimit
 
 
 APPLICATION_ID = 0x4C444331
-FORMATS = {".csv", ".tsv", ".txt", ".db", ".sqlite", ".sqlite3"}
+FORMATS = {".csv", ".tsv", ".txt", ".db", ".sqlite", ".sqlite3", ".xlsx"}
 LOCK = ".consolidar-sqlite.lock"
 
 
@@ -100,7 +100,7 @@ def _check_outputs(final, pending):
 
 
 def _header(columns):
-    if not columns or len(columns) > 256 or any(not name or "\x00" in name for name in columns):
+    if not columns or len(columns) > 256 or any(not isinstance(name, str) or not name or "\x00" in name for name in columns):
         raise ConsolidationError("Cabeçalho vazio, inválido ou com mais de 256 colunas.")
     if len(set(columns)) != len(columns):
         raise ConsolidationError("Cabeçalho contém nomes de colunas repetidos.")
@@ -115,6 +115,10 @@ def _sqlite_value(value):
 
 def _rows(path, encoding, delimiter):
     suffix = path.suffix.casefold()
+    if suffix == ".xlsx":
+        from .xlsx_source import iter_records
+        yield from iter_records(path)
+        return
     if suffix in {".db", ".sqlite", ".sqlite3"}:
         with path.open("rb") as stream:
             header = stream.read(20)
@@ -243,8 +247,9 @@ def _import_source(connection, root, name, options, batch_size, progress):
         connection.commit()
         _event(progress, "rows_committed", arquivo=name, linhas_lidas=rows_read, novos_acumulados=new_count)
 
+    reader = _rows(path, options["encoding"], options["delimiter"])
     try:
-        for table, row in _rows(path, options["encoding"], options["delimiter"]):
+        for table, row in reader:
             payload = _json(row)
             encoded = payload.encode("utf-8")
             if len(encoded) > MAX_ROW_BYTES:
@@ -269,6 +274,8 @@ def _import_source(connection, root, name, options, batch_size, progress):
     except BaseException:
         connection.rollback()
         raise
+    finally:
+        reader.close()
 
 
 def _manifest(connection):
@@ -384,10 +391,13 @@ def consolidate(folder, *, remove_sources=False, encoding="utf-8-sig", delimiter
     try:
         _check_outputs(final, pending)
         current_files, current_dirs = _inventory(root, excluded)
+        if any(Path(name).suffix.casefold() == ".xlsx" for name in current_files):
+            from .xlsx_source import check_support
+            check_support()
         output = final if final.exists() else pending
         create = not output.exists()
         if create and not current_files:
-            raise ConsolidationError("Nenhuma fonte CSV, TXT ou SQLite encontrada fora de backup.")
+            raise ConsolidationError("Nenhuma fonte CSV, TXT, XLSX ou SQLite encontrada fora de backup.")
         connection = _connect(output, root, options, create=create)
         state = connection.execute("SELECT valor FROM configuracao WHERE chave='estado'").fetchone()[0]
         if output == pending:

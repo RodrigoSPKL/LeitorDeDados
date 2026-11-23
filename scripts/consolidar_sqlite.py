@@ -10,7 +10,7 @@ from leitor_dados.consolidate import consolidate, ConsolidationError
 
 
 def main():
-    parser = argparse.ArgumentParser(description="CSV, TXT por linha e SQLite para um SQLite com deduplicação SHA-256 global.")
+    parser = argparse.ArgumentParser(description="CSV, TXT por linha, XLSX e SQLite para um SQLite com deduplicação SHA-256 global.")
     parser.add_argument("--folder", default=".", help="Pasta de dados; padrão: pasta atual.")
     parser.add_argument("--apagar-fontes", action="store_true", help="Apagar fontes e pastas após importar e verificar tudo. Preserva backup.")
     parser.add_argument("--encoding", default="utf-8-sig", help="Codificação de CSV/TXT; ex.: cp1252. Padrão UTF-8 com BOM opcional.")
