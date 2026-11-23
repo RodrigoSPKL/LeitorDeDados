@@ -1,0 +1,137 @@
+import io
+import json
+from contextlib import redirect_stdout
+from pathlib import Path
+from types import SimpleNamespace
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from scripts import extrair_rars as rar
+
+
+class ExtractRarsTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.archive = self.root / "file with [spaces].rar"
+        self.archive.write_bytes(b"original archive")
+
+    def inspect_stub(self, paths=None, entries=None, properties=None):
+        data = {"lsarFormatName": "RAR 5", "lsarContents": entries or [{"XADFileName": "data.csv", "XADFileSize": 10}],
+                "lsarProperties": {"XADVolumes": [str(path) for path in paths or [self.archive]], **(properties or {})}}
+
+        def run(command, **kwargs):
+            kwargs["stdout"].write(json.dumps(data).encode())
+            return SimpleNamespace(returncode=0)
+        return run
+
+    def extract_stub(self, command, **kwargs):
+        staging = Path(command[command.index("-o") + 1])
+        (staging / "data.csv").write_text("code\nTEST\n", encoding="utf-8")
+        return SimpleNamespace(returncode=0)
+
+    def run_folder(self, inspect=None, extractor=None, depth=12):
+        with patch.object(rar.shutil, "which", return_value="tool"), patch.object(
+            rar, "_inspect", side_effect=inspect or (lambda archive: ([archive], 10))
+        ), patch.object(rar.subprocess, "run", side_effect=extractor or self.extract_stub), redirect_stdout(io.StringIO()):
+            return rar.extract_folder(self.root, depth)
+
+    def test_inspection_identifies_volumes_and_bounds_output_paths(self):
+        second = self.root / "second.rar"
+        second.write_bytes(b"second")
+        with patch.object(rar.subprocess, "run", side_effect=self.inspect_stub([self.archive, second])):
+            self.assertEqual(rar._inspect(self.archive), ([self.archive, second], 10))
+        for name in ("../escape", "/absolute", "C:\\escape", "folder/../../escape"):
+            with self.subTest(name=name), patch.object(rar.subprocess, "run", side_effect=self.inspect_stub(entries=[{"XADFileName": name, "XADFileSize": 1}])):
+                with self.assertRaises(rar.ExtractionError):
+                    rar._inspect(self.archive)
+
+    def test_inspection_rejects_missing_volumes_failed_scans_and_links(self):
+        cases = [self.inspect_stub([self.archive, self.root / "missing.rar"]),
+                 self.inspect_stub(properties={"XADVolumeScanningFailed": True}),
+                 self.inspect_stub(entries=[{"XADFileName": "link", "XADIsLink": True, "XADFileSize": 0}]),
+                 self.inspect_stub(entries=[{"XADFileName": "pipe", "XADIsFIFO": True, "XADFileSize": 0}])]
+        for stub in cases:
+            with patch.object(rar.subprocess, "run", side_effect=stub), self.assertRaises(rar.ExtractionError):
+                rar._inspect(self.archive)
+
+    def test_success_preserves_data_and_moves_original_only_after_extracting(self):
+        unrelated = self.root / "existing.csv"
+        unrelated.write_bytes(b"keep")
+        report = self.run_folder()
+        self.assertFalse(report["failures"])
+        self.assertEqual((report["extracted_sets"], report["backed_up_volumes"], report["remaining_rars"]), (1, 1, 0))
+        self.assertEqual(next((self.root / "backup").rglob("*.rar")).read_bytes(), b"original archive")
+        self.assertFalse(self.archive.exists())
+        self.assertTrue((self.root / "file with [spaces]_extraido" / "data.csv").is_file())
+        self.assertEqual(unrelated.read_bytes(), b"keep")
+        self.assertFalse((self.root / ".rar-extraction-lock").exists())
+
+    def test_failed_extraction_keeps_archive_and_partial_output_outside_backup(self):
+        def failed(command, **kwargs):
+            self.extract_stub(command, **kwargs)
+            return SimpleNamespace(returncode=1)
+        report = self.run_folder(extractor=failed)
+        self.assertEqual(len(report["failures"]), 1)
+        self.assertEqual(self.archive.read_bytes(), b"original archive")
+        self.assertFalse(list((self.root / "backup").rglob("*.rar")))
+        self.assertTrue(list(self.root.glob(".rar-pending-*")))
+
+    def test_multipart_is_processed_once_and_all_volumes_remain_together(self):
+        self.archive.unlink()
+        parts = [self.root / f"set.part{i:04}.rar" for i in range(1, 4)]
+        for part in parts:
+            part.write_bytes(b"part")
+        report = self.run_folder(inspect=lambda archive: (parts, 10))
+        self.assertEqual((report["extracted_sets"], report["backed_up_volumes"]), (1, 3))
+        saved = list((self.root / "backup").rglob("*.rar"))
+        self.assertEqual({path.name for path in saved}, {part.name for part in parts})
+        self.assertEqual(len({path.parent for path in saved}), 1)
+
+    def test_existing_destination_does_not_overwrite_or_move_archive(self):
+        output = self.root / "file with [spaces]_extraido"
+        output.mkdir()
+        (output / "keep").write_bytes(b"keep")
+        report = self.run_folder()
+        self.assertTrue(report["failures"])
+        self.assertTrue(self.archive.exists())
+        self.assertEqual((output / "keep").read_bytes(), b"keep")
+
+    def test_nested_directories_and_nested_rars_are_processed_except_backup(self):
+        ignored = self.root / "other" / "backup"
+        ignored.mkdir(parents=True)
+        (ignored / "ignored.rar").write_bytes(b"keep")
+
+        def nested(command, **kwargs):
+            staging = Path(command[command.index("-o") + 1])
+            if command[-1] == str(self.archive):
+                (staging / "inner.rar").write_bytes(b"inner")
+            else:
+                (staging / "done.txt").write_bytes(b"done")
+            return SimpleNamespace(returncode=0)
+        report = self.run_folder(extractor=nested)
+        self.assertEqual(report["extracted_sets"], 2)
+        self.assertEqual((ignored / "ignored.rar").read_bytes(), b"keep")
+        self.assertEqual(len(list((self.root / "backup").rglob("*.rar"))), 2)
+
+    def test_failed_backup_move_restores_previous_volumes(self):
+        second = self.root / "second.rar"
+        second.write_bytes(b"second")
+        original_rename = Path.rename
+
+        def fail_second(source, target):
+            if source == second:
+                raise OSError("simulated move failure")
+            return original_rename(source, target)
+        with patch.object(Path, "rename", fail_second):
+            report = self.run_folder(inspect=lambda archive: ([self.archive, second], 10))
+        self.assertTrue(report["failures"])
+        self.assertEqual(self.archive.read_bytes(), b"original archive")
+        self.assertEqual(second.read_bytes(), b"second")
+        self.assertFalse(list((self.root / "backup").rglob("*.rar")))
+
+
+if __name__ == "__main__":
+    unittest.main()

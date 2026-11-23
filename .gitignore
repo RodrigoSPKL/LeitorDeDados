@@ -19,6 +19,10 @@ secrets/
 *.log
 dist/
 .leitor/
+backup/
+.rar-pending-*/
+.rar-extraction-lock/
+*_extraido/
 .agents/
 .codex/
 .aws/
