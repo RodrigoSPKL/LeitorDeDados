@@ -16,10 +16,15 @@ def main():
     parser.add_argument("--encoding", default="utf-8-sig", help="Codificação CSV/TXT: auto valida BOM/UTF-8 e usa CP1252 como alternativa; ou fixe cp1252, utf-8-sig etc. Padrão: utf-8-sig.")
     parser.add_argument("--delimiter", help="Separador CSV explícito; padrão: detectar , ; TAB |.")
     parser.add_argument("--batch-size", type=int, default=10000)
+    parser.add_argument("--cache-mib", type=int, default=256, help="Cache SQLite em MiB (16 a 16384); padrão 256.")
+    parser.add_argument("--batch-mib", type=int, default=64, help="Orçamento de payload por lote em MiB (4 a 1024); padrão 64.")
+    parser.add_argument("--reorganizar", action="store_true", help="Converter a tabela antiga do provisório para dados sequenciais e índice de hash compacto, preservando as linhas.")
     args = parser.parse_args()
     try:
         consolidate(args.folder, remove_sources=args.apagar_fontes, encoding=args.encoding,
                     delimiter=args.delimiter, batch_size=args.batch_size,
+                    cache_mib=args.cache_mib, batch_mib=args.batch_mib,
+                    reorganize=args.reorganizar,
                     progress=lambda event: print(json.dumps(event, ensure_ascii=True), flush=True))
     except KeyboardInterrupt:
         print("Interrompido. Fontes ainda não removidas continuam no disco; execute novamente com as mesmas opções.", file=sys.stderr)

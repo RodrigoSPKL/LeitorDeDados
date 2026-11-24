@@ -99,13 +99,15 @@ Para abrir na pasta de dados com o programa `sqlite3` instalado:
 sqlite3 -readonly "$(basename "$PWD").sqlite"
 ```
 
-`registros` contém `hash` (BLOB), `dados` (JSON), `fonte_id` e `tabela_origem` da **primeira ocorrência**. `fontes` guarda caminhos relativos, checksums, linhas lidas e quantas linhas únicas cada fonte introduziu. Não mantém uma associação para cada repetição descartada. `pastas` e `configuracao` contêm o manifesto e o estado da operação. Não remova essas tabelas se precisar retomar a limpeza.
+`registros` contém `hash` (BLOB), `dados` (JSON), `fonte_id` e `tabela_origem` da **primeira ocorrência**. Bancos novos também têm `id INTEGER PRIMARY KEY`: os dados são acrescentados por ID, e um índice único separado guarda o hash compacto. O ID não faz parte do hash e não é um identificador de pessoa. O banco antigo `WITHOUT ROWID` continua legível; a conversão é descrita abaixo. `fontes` guarda caminhos relativos, checksums, linhas lidas e quantas linhas únicas cada fonte introduziu. Não mantém uma associação para cada repetição descartada. `pastas` e `configuracao` contêm o manifesto e o estado da operação. Não remova essas tabelas se precisar retomar a limpeza.
 
 O hash tem índice único; os campos dentro de `dados` **não recebem índices de consulta automaticamente**. A consulta por CPF acima pode percorrer o banco inteiro. Este arquivo não é automaticamente publicado na API existente do projeto. O objetivo deste script é consolidar e deduplicar; a preparação dos índices de busca é uma etapa separada, definida a partir dos campos reais.
 
 ## Verificação, retomada e espaço
 
-Durante a carga aparece `.NOME.importando.sqlite`. O banco confirma lotes de 10 mil linhas (ajustável por `--batch-size`). Uma falha de importação mantém todas as fontes e o banco provisório. Para repetir, execute com as mesmas opções: fontes concluídas e inalteradas são reconhecidas pelo manifesto; a fonte interrompida é relida desde o início, e a restrição por hash impede novas duplicatas. Lotes já confirmados continuam no provisório. A retomada não salta diretamente para uma posição do CSV/TXT.
+Durante a carga aparece `.NOME.importando.sqlite`. O banco confirma lotes de 10 mil linhas (ajustável por `--batch-size`), com orçamento de payload de 64 MiB (`--batch-mib`). A primeira condição alcançada fecha o lote. Repetições dentro do lote são agrupadas, e as inserções são ordenadas pelo hash e executadas em conjunto; colisões com conteúdo diferente continuam causando erro. O processo pode consumir mais memória do que o orçamento de payload por causa de objetos Python, ordenação e cache.
+
+Uma falha de importação mantém todas as fontes e o banco provisório. Para repetir, execute com as mesmas opções: fontes concluídas e inalteradas são reconhecidas pelo manifesto. Em CSV/TXT, após conferir o checksum da fonte, o leitor percorre o prefixo de linhas já confirmado sem refazer serialização, hashes ou consultas de deduplicação. Isso ainda exige leitura e parsing do prefixo: não há seek direto para um byte do arquivo. SQLite e XLSX continuam sendo relidos e deduplicados desde o início. A migração de codificação que exige reprocessamento zera os pontos de retomada das fontes afetadas.
 
 Antes da publicação, o importador executa `PRAGMA integrity_check`, recalcula o hash de cada registro e reconcilia as contagens. Também relê as fontes para conferir SHA-256 e identidade. Só então renomeia o provisório para `NOME.sqlite`. A limpeza confere novamente as fontes, registra no SQLite que começou e apaga apenas arquivos do manifesto. As pastas são removidas com `rmdir`, que recusa conteúdos inesperados.
 
@@ -113,6 +115,48 @@ Uma falha **durante** a limpeza pode deixar algumas fontes já removidas e outra
 
 Uma interrupção forçada (`kill -9`, queda de energia) pode deixar `.consolidar-sqlite.lock`. Só remova essa pasta vazia após confirmar que nenhum importador está ativo. Journals SQLite de saída são recuperados pelo SQLite; não os apague manualmente. Um banco final existente de outro programa não é sobrescrito.
 
-O banco, índice por hash e fontes coexistem no disco até terminar a verificação. A importação não reduz o uso de disco progressivamente apagando pastas. Há várias passagens de leitura, incluindo a conferência integral, e o banco pode ser maior que os CSVs; não há um multiplicador fixo de espaço ou prazo garantido. A memória de cache do SQLite é limitada a aproximadamente 64 MiB, além do processo, registros e metadados de arquivos; o volume de linhas não é carregado todo na RAM. No XLSX, as linhas são percorridas em fluxo, mas o leitor também mantém metadados e tabelas de strings compartilhadas de duas leituras da planilha em memória; portanto, o consumo total não fica limitado a 64 MiB.
+O banco, índice por hash e fontes coexistem no disco até terminar a verificação. A importação não reduz o uso de disco progressivamente apagando pastas. Há várias passagens de leitura, incluindo a conferência integral, e o banco pode ser maior que os CSVs; não há um multiplicador fixo de espaço ou prazo garantido. O cache do SQLite tem orçamento padrão de aproximadamente 256 MiB, ajustável por `--cache-mib` (16 a 16384 MiB), além de lotes, processo, registros e metadados de arquivos. Esses limites não representam a memória total do processo; o volume inteiro de linhas não é carregado na RAM. No XLSX, o leitor também mantém metadados e tabelas de strings compartilhadas de duas leituras da planilha em memória.
 
 Prefira disco local Linux com ext4/XFS e espaço livre medido. Este script não usa `chmod/chown`, mas sua execução em exFAT, em filesystem de rede e com volumes enormes ainda não foi validada. Não garante recuperação após falhas de hardware. **Os testes pequenos não comprovam capacidade ou desempenho em 20 bilhões de registros num único SQLite.** Faça o benchmark com uma cópia representativa antes da carga completa.
+
+## Carga lenta em HD USB e bancos provisórios antigos
+
+Gravar centenas de milhões de hashes pode gerar acessos aleatórios ao disco. Na estrutura antiga, os textos completos também estavam na árvore ordenada pelo hash (`WITHOUT ROWID`), aumentando o volume de páginas envolvido. A [documentação do SQLite](https://sqlite.org/withoutrowid.html#when_to_use_without_rowid) recomenda medir essa escolha e observa que tabelas rowid tendem a ser mais rápidas para registros grandes. Bancos novos agora separam os dados em uma tabela com ID e mantêm um índice compacto de hash.
+
+Para aproveitar um **provisório antigo** sem reimportar todas as linhas já gravadas, pare o importador com **Ctrl+C no terminal original**, espere voltar ao prompt e, na mesma pasta dos dados, execute:
+
+```bash
+PROJETO="$HOME/LeitorDeDados-linux"
+git -C "$PROJETO" pull --ff-only &&
+"$PROJETO/.venv/bin/python" "$PROJETO/scripts/consolidar_sqlite.py" \
+  --encoding auto --reorganizar --cache-mib 4096 \
+  --batch-size 100000 --batch-mib 64 --apagar-fontes
+```
+
+O cache de 4096 MiB é uma opção para uma máquina com aproximadamente 32 GiB de RAM e memória disponível. Para máquinas menores, ajuste esse valor. Cache e tamanho de lote são parâmetros de execução: podem mudar numa retomada sem invalidar hashes ou opções de importação. **As fontes e o banco provisório devem permanecer onde estão. Não rode duas instâncias, não apague o provisório e não use `kill -9` para encerrar a carga.**
+
+`--reorganizar` copia internamente os registros já confirmados para a nova estrutura, cria o índice único de hash, confere a contagem e executa `quick_check`. A troca da tabela é feita numa transação: uma falha antes do commit desfaz a conversão. Fontes não são apagadas por essa etapa. O hash, JSON, origem, contadores e pontos de retomada permanecem. Se o banco já usa a estrutura nova, não faz outra cópia. Bancos finais publicados não são convertidos por essa opção.
+
+A conversão é uma etapa adicional e **pode demorar**, dependendo do tamanho do provisório e do disco. Requer espaço livre conservador de pelo menos três vezes o tamanho atual do arquivo, mais 128 MiB, para cópia, índice e rollback; o sort do índice também pode usar o diretório temporário do sistema. Se faltar espaço, a operação falha e preserva as fontes. Ao terminar, páginas da tabela antiga ficam livres para serem reutilizadas: o tamanho físico do arquivo pode não diminuir imediatamente. Não executa `VACUUM` automaticamente. A conferência integral dos registros continua sendo feita antes da publicação e limpeza.
+
+O log informa as etapas `reorganizing_database`, `building_compact_hash_index`, `checking_reorganized_database` e `database_reorganized`. Ao retomar um CSV/TXT, `skipping_committed_rows` e `rows_skipped` mostram a leitura do prefixo; `source_resume_ready` indica que chegou às linhas novas. Em cada `rows_committed`:
+
+- `linhas_lidas` e `novos_acumulados` continuam sendo **do arquivo atual**;
+- `linhas_total_confirmadas` e `registros_unicos_total` somam as fontes do lote;
+- `linhas_por_segundo` mede a média de linhas novas processadas na sessão desse arquivo, após o prefixo de retomada. Não inclui a futura verificação integral e não é garantia de prazo total.
+
+Mantém `journal_mode=DELETE` e `synchronous=FULL`; não desativa durabilidade para apresentar números maiores. Cache e inserções organizadas ajudam, mas não eliminam o limite de um HD mecânico ou da conexão USB. Um SSD com capacidade suficiente pode ser necessário para a meta real. Não mova o provisório isoladamente nem reformate o disco para tentar resolver isso: caminhos e identidades das fontes fazem parte do manifesto.
+
+### Benchmark reproduzível
+
+O teste abaixo gera somente registros fictícios, compara os motores e confere se seus resultados são idênticos. Cria e remove apenas seu próprio diretório temporário no caminho escolhido. **Não execute junto da carga real**, pois competiria por disco e memória.
+
+```bash
+python3 "$HOME/LeitorDeDados-linux/scripts/benchmark_consolidacao.py" \
+  --directory /caminho/com/espaco --rows 150000 --payload-bytes 1024 \
+  --cache-mib 16 --batch-size 10000 --repeats 2 --compare-layouts
+```
+
+No desenvolvimento Windows/CPython 3.14.7/SQLite 3.50.4, 150 mil linhas, 25% de repetições, campo de texto com 1024 bytes e cache de 16 MiB produziram medianas de **12,368 s** no motor antigo, **6,646 s** com lotes na estrutura antiga e **1,795 s** com lotes e a estrutura nova: aproximadamente **6,89 vezes** sobre o antigo nesse cenário. O hash agregado dos 112.500 registros únicos foi igual nos seis resultados. Os arquivos novos mediram aproximadamente 503 MiB na estrutura antiga e 152 MiB na nova.
+
+Um segundo cenário com textos de 512 bytes e cache de 64 MiB mostrou apenas **1,03 vez** de ganho ao agrupar inserções sem mudar a estrutura. Esses números demonstram a dependência do tamanho das linhas, cache e armazenamento. Medem somente preparação de registros e gravação: não incluem CSV, detecção de codificação, fingerprints de fontes, reorganização ou verificação final. **Não foram medidos no HD USB/exFAT do usuário e não podem ser extrapolados diretamente para 500 milhões de linhas.**

@@ -86,7 +86,7 @@ def upgrade_to_auto(connection, root, options, progress):
                 connection.execute("DELETE FROM registros WHERE fonte_id=?", (source_id,))
             connection.execute("UPDATE fontes SET completo=0, linhas=0, novos=0 WHERE id=?", (source_id,))
         if replay:
-            connection.execute("UPDATE fontes SET completo=0")
+            connection.execute("UPDATE fontes SET completo=0,linhas=0")
         connection.executemany("UPDATE fontes SET encoding=? WHERE id=?", [(encoding, source_id) for source_id, encoding in selected.items()])
         connection.execute("UPDATE configuracao SET valor=? WHERE chave='opcoes'", (_json(options),))
         connection.commit()

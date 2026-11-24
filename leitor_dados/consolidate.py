@@ -9,8 +9,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import stat
+from time import monotonic
 
 from .catalog import CatalogError, MAX_ROW_BYTES, _LimitedLines, _header_delimiter, _quoted
 
@@ -183,7 +185,7 @@ def _rows(path, encoding, delimiter):
                 csv.field_size_limit(old_limit)
 
 
-def _connect(path, root, options, *, create, allow_auto_upgrade=False):
+def _connect(path, root, options, *, create, allow_auto_upgrade=False, cache_mib=256):
     if not create:
         _regular(path)
     connection = sqlite3.connect(path, isolation_level=None)
@@ -203,7 +205,7 @@ def _connect(path, root, options, *, create, allow_auto_upgrade=False):
                 raise ConsolidationError("Banco existente usa outra configuração; mantenha as opções originais. A troca de UTF-8 para auto só é aceita no banco provisório.")
         connection.execute("PRAGMA journal_mode=DELETE")
         connection.execute("PRAGMA synchronous=FULL")
-        connection.execute("PRAGMA cache_size=-65536")
+        connection.execute(f"PRAGMA cache_size=-{cache_mib * 1024}")
         connection.execute("PRAGMA temp_store=FILE")
         if create:
             connection.execute(f"PRAGMA application_id={APPLICATION_ID}")
@@ -213,8 +215,8 @@ def _connect(path, root, options, *, create, allow_auto_upgrade=False):
                     assinatura TEXT NOT NULL, sha256 TEXT NOT NULL, completo INTEGER NOT NULL DEFAULT 0,
                     linhas INTEGER NOT NULL DEFAULT 0, novos INTEGER NOT NULL DEFAULT 0, encoding TEXT);
                 CREATE TABLE pastas(caminho TEXT PRIMARY KEY, identidade TEXT NOT NULL);
-                CREATE TABLE registros(hash BLOB PRIMARY KEY CHECK(length(hash)=32), dados TEXT NOT NULL,
-                    fonte_id INTEGER NOT NULL, tabela_origem TEXT) WITHOUT ROWID;
+                CREATE TABLE registros(id INTEGER PRIMARY KEY, hash BLOB NOT NULL UNIQUE CHECK(length(hash)=32),
+                    dados TEXT NOT NULL, fonte_id INTEGER NOT NULL, tabela_origem TEXT);
             ''')
             connection.execute("BEGIN IMMEDIATE")
             connection.executemany("INSERT INTO configuracao VALUES (?,?)", [
@@ -233,20 +235,89 @@ def _event(progress, stage, **values):
         progress({"stage": stage, **values})
 
 
-def _import_source(connection, root, name, options, batch_size, progress):
+class _BatchWriter:
+    """One prepared insert, ordered keys and collision checks inside SQLite."""
+    SQL = ("INSERT INTO registros(hash,dados,fonte_id,tabela_origem) VALUES (?,?,?,?) "
+           "ON CONFLICT(hash) DO UPDATE SET dados=_ld_hash_collision() "
+           "WHERE registros.dados<>excluded.dados")
+
+    def __init__(self, connection):
+        self.connection = connection
+        self.collision = False
+        connection.create_function("_ld_hash_collision", 0, self._collision)
+
+    def _collision(self):
+        self.collision = True
+        raise ValueError("hash collision")
+
+    def write(self, batch, source_id):
+        self.collision = False
+        before = self.connection.total_changes
+        try:
+            self.connection.executemany(self.SQL,
+                ((digest, batch[digest][0], source_id, batch[digest][1]) for digest in sorted(batch)))
+        except sqlite3.Error:
+            if self.collision:
+                raise ConsolidationError("Colisão de hash detectada; importação e limpeza interrompidas.") from None
+            raise
+        return self.connection.total_changes - before
+
+
+def _reorganize(connection, path, progress):
+    """Atomically replace only the old payload-clustered table, preserving records."""
+    table = next(row for row in connection.execute("PRAGMA main.table_list") if row[1] == "registros")
+    if not table[4]:  # Already an ordinary rowid table.
+        _event(progress, "database_layout_current", layout="rowid-hash-v2")
+        return
+    required = path.stat().st_size * 3 + 128 * 1024**2
+    if shutil.disk_usage(path.parent).free < required:
+        raise ConsolidationError("Espaço insuficiente para reorganizar com rollback: reserve três vezes o tamanho atual do banco em espaço livre.")
+    expected = connection.execute("SELECT coalesce(sum(novos),0) FROM fontes").fetchone()[0]
+    _event(progress, "reorganizing_database", registros=expected, free_required_bytes=required)
+    connection.set_progress_handler(lambda: 0, 10000)
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute('''CREATE TABLE _ld_registros_v2(id INTEGER PRIMARY KEY,
+            hash BLOB NOT NULL CHECK(length(hash)=32), dados TEXT NOT NULL,
+            fonte_id INTEGER NOT NULL, tabela_origem TEXT)''')
+        cursor = connection.execute('''INSERT INTO _ld_registros_v2(hash,dados,fonte_id,tabela_origem)
+            SELECT hash,dados,fonte_id,tabela_origem FROM registros ORDER BY hash''')
+        if cursor.rowcount != expected:
+            raise ConsolidationError("Contagem inconsistente durante a reorganização; banco anterior preservado.")
+        _event(progress, "building_compact_hash_index", registros=expected)
+        connection.execute("CREATE UNIQUE INDEX _ld_registros_hash_v2 ON _ld_registros_v2(hash)")
+        _event(progress, "checking_reorganized_database")
+        for (value,) in connection.execute("PRAGMA quick_check"):
+            if value != "ok":
+                raise ConsolidationError("A verificação da reorganização falhou; banco anterior preservado.")
+        connection.execute("DROP TABLE registros")
+        connection.execute("ALTER TABLE _ld_registros_v2 RENAME TO registros")
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.set_progress_handler(None, 0)
+    _event(progress, "database_reorganized", registros=expected, layout="rowid-hash-v2")
+
+
+def _import_source(connection, root, name, options, batch_size, progress, *, batch_mib=64):
     path = root / name
     _event(progress, "hashing_source", arquivo=name)
     signature, checksum = _fingerprint(path)
-    saved = connection.execute("SELECT id, assinatura, sha256, completo, novos, encoding FROM fontes WHERE caminho=?", (name,)).fetchone()
+    saved = connection.execute("SELECT id, assinatura, sha256, completo, novos, encoding, linhas FROM fontes WHERE caminho=?", (name,)).fetchone()
     source_encoding = options["encoding"]
+    resume_rows = 0
     if saved:
-        source_id, expected, digest, complete, new_count, source_encoding = saved
+        source_id, expected, digest, complete, new_count, source_encoding, resume_rows = saved
         if expected != _json(signature) or digest != checksum:
             raise ConsolidationError(f"Origem mudou desde a importação: {name!r}. Reconstrua em outro banco; fontes preservadas.")
         if complete:
             _event(progress, "source_already_imported", arquivo=name)
             return
     from .source_encoding import TEXT_SUFFIXES, detect
+    if path.suffix.casefold() not in TEXT_SUFFIXES:
+        resume_rows = 0
     if path.suffix.casefold() in TEXT_SUFFIXES:
         source_encoding = source_encoding or options["encoding"]
         if source_encoding == "auto":
@@ -260,34 +331,56 @@ def _import_source(connection, root, name, options, batch_size, progress):
     else:
         cursor = connection.execute("INSERT INTO fontes(caminho, assinatura, sha256,encoding) VALUES (?,?,?,?)", (name, _json(signature), checksum, source_encoding))
         source_id, new_count = cursor.lastrowid, 0
-    rows_read, pending = 0, 0
+    rows_read, pending, batch_bytes = 0, 0, 0
+    batch = {}
+    writer = _BatchWriter(connection)
+    started = monotonic()
+    if resume_rows:
+        _event(progress, "skipping_committed_rows", arquivo=name, linhas=resume_rows)
     connection.execute("BEGIN IMMEDIATE")
 
     def commit_batch():
+        nonlocal new_count
+        if batch:
+            new_count += writer.write(batch, source_id)
         connection.execute("UPDATE fontes SET linhas=?, novos=? WHERE id=?", (rows_read, new_count, source_id))
         connection.commit()
-        _event(progress, "rows_committed", arquivo=name, linhas_lidas=rows_read, novos_acumulados=new_count)
+        batch.clear()
+        totals = connection.execute("SELECT coalesce(sum(linhas),0),coalesce(sum(novos),0) FROM fontes").fetchone()
+        _event(progress, "rows_committed", arquivo=name, linhas_lidas=rows_read, novos_acumulados=new_count,
+               linhas_total_confirmadas=totals[0], registros_unicos_total=totals[1],
+               linhas_por_segundo=round((rows_read-resume_rows) / max(monotonic()-started, 0.001), 1))
 
     reader = _rows(path, source_encoding, options["delimiter"])
     try:
         for table, row in reader:
+            if rows_read < resume_rows:
+                rows_read += 1
+                if rows_read % 1000000 == 0:
+                    _event(progress, "rows_skipped", arquivo=name, linhas=rows_read, alvo=resume_rows)
+                if rows_read == resume_rows:
+                    started = monotonic()
+                    _event(progress, "source_resume_ready", arquivo=name, linhas=rows_read)
+                continue
             payload = _json(row)
             encoded = payload.encode("utf-8")
             if len(encoded) > MAX_ROW_BYTES:
                 raise ConsolidationError("Registro convertido excede 4 MiB.")
             digest = hashlib.sha256(encoded).digest()
-            cursor = connection.execute("INSERT INTO registros VALUES (?,?,?,?) ON CONFLICT(hash) DO NOTHING",
-                                        (digest, payload, source_id, table))
-            if cursor.rowcount:
-                new_count += 1
-            elif connection.execute("SELECT dados FROM registros WHERE hash=?", (digest,)).fetchone()[0] != payload:
+            previous = batch.get(digest)
+            if previous is not None and previous[0] != payload:
                 raise ConsolidationError("Colisão de hash detectada; importação e limpeza interrompidas.")
+            if previous is None:
+                batch[digest] = (payload, table)
+                batch_bytes += len(encoded) + 32
             rows_read += 1
             pending += 1
-            if pending == batch_size:
+            if pending == batch_size or batch_bytes >= batch_mib * 1024**2:
                 commit_batch()
-                pending = 0
+                pending, batch_bytes = 0, 0
                 connection.execute("BEGIN IMMEDIATE")
+        if rows_read < resume_rows:
+            raise ConsolidationError("O arquivo terminou antes do ponto de retomada; fontes preservadas.")
         if _signature(path) != signature:
             raise ConsolidationError("A origem mudou durante a importação; fontes preservadas.")
         connection.execute("UPDATE fontes SET completo=1 WHERE id=?", (source_id,))
@@ -388,13 +481,18 @@ def _sync_directory(root):
             os.close(descriptor)
 
 
-def consolidate(folder, *, remove_sources=False, encoding="utf-8-sig", delimiter=None, batch_size=10000, progress=None):
+def consolidate(folder, *, remove_sources=False, encoding="utf-8-sig", delimiter=None, batch_size=10000,
+                cache_mib=256, batch_mib=64, reorganize=False, progress=None):
     original = Path(folder).absolute()
     root = original.resolve(strict=True)
     if root != original or root == Path(root.anchor) or not root.is_dir() or root.name.casefold() == "backup":
         raise ConsolidationError("Escolha uma pasta de dados real, fora de links, backup e raiz do sistema.")
     if not isinstance(batch_size, int) or not 1 <= batch_size <= 100000:
         raise ConsolidationError("O lote precisa ter entre 1 e 100000 registros.")
+    if type(cache_mib) is not int or not 16 <= cache_mib <= 16384:
+        raise ConsolidationError("cache-mib precisa estar entre 16 e 16384 MiB.")
+    if type(batch_mib) is not int or not 4 <= batch_mib <= 1024:
+        raise ConsolidationError("batch-mib precisa estar entre 4 e 1024 MiB.")
     if encoding != "auto":
         codecs.lookup(encoding)
     if delimiter is not None and (len(delimiter) != 1 or delimiter in '\r\n\0"'):
@@ -420,7 +518,11 @@ def consolidate(folder, *, remove_sources=False, encoding="utf-8-sig", delimiter
         create = not output.exists()
         if create and not current_files:
             raise ConsolidationError("Nenhuma fonte CSV, TXT, XLSX ou SQLite encontrada fora de backup.")
-        connection = _connect(output, root, options, create=create, allow_auto_upgrade=output == pending)
+        if reorganize and output == final:
+            raise ConsolidationError("A reorganização é exclusiva do banco provisório; banco final preservado.")
+        connection = _connect(output, root, options, create=create, allow_auto_upgrade=output == pending, cache_mib=cache_mib)
+        _event(progress, "import_settings", cache_mib=cache_mib, batch_size=batch_size, batch_mib=batch_mib,
+               journal_mode="DELETE", synchronous="FULL")
         state = connection.execute("SELECT valor FROM configuracao WHERE chave='estado'").fetchone()[0]
         if output == pending:
             saved_files, saved_dirs = _manifest(connection)
@@ -432,11 +534,13 @@ def consolidate(folder, *, remove_sources=False, encoding="utf-8-sig", delimiter
                 if name in saved_dirs and saved_dirs[name] != identity:
                     raise ConsolidationError("Uma pasta registrada foi substituída.")
                 connection.execute("INSERT OR IGNORE INTO pastas VALUES (?,?)", (name, _json(identity)))
+            if reorganize:
+                _reorganize(connection, output, progress)
             _event(progress, "discovered_files", count=len(current_files))
             for name in current_files:
                 _event(progress, "importing_source", arquivo=name)
                 try:
-                    _import_source(connection, root, name, options, batch_size, progress)
+                    _import_source(connection, root, name, options, batch_size, progress, batch_mib=batch_mib)
                 except ConsolidationError as error:
                     raise ConsolidationError(f"Fonte {name!r}: {error}") from None
                 except UnicodeDecodeError:
@@ -454,7 +558,7 @@ def consolidate(folder, *, remove_sources=False, encoding="utf-8-sig", delimiter
             pending.rename(final)
             # Persist the rename on Linux before any source is removed.
             _sync_directory(root)
-            connection = _connect(final, root, options, create=False)
+            connection = _connect(final, root, options, create=False, cache_mib=cache_mib)
         else:
             _check_sources(connection, root, excluded, cleaning=state in {"limpando", "concluido"}, progress=progress)
             count = _verify(connection, progress)

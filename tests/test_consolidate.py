@@ -269,7 +269,8 @@ class ConsolidateTests(unittest.TestCase):
     def test_command_runs_from_current_folder_without_docker(self):
         self.write("sub/a.csv", "codigo,nome\n001,Registro ficticio\n")
         script = Path(__file__).resolve().parents[1] / "scripts" / "consolidar_sqlite.py"
-        process = subprocess.run([sys.executable, str(script), "--apagar-fontes"],
+        process = subprocess.run([sys.executable, str(script), "--apagar-fontes", "--encoding", "auto",
+                                  "--cache-mib", "16", "--batch-size", "2", "--batch-mib", "4", "--reorganizar"],
                                  cwd=self.root, capture_output=True, text=True, check=False)
         self.assertEqual(process.returncode, 0, process.stderr)
         summary = json.loads(process.stdout.splitlines()[-1])
